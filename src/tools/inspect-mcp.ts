@@ -2,13 +2,14 @@
 // and return a Claude-narrated security brief.
 //
 // Quick mode (default): authless, top-8 rules.
-// Deep mode: requires api_key, runs all 26 rules (Phase 5 wires the deep set).
+// Deep mode: requires api_key, runs all 26 rules.
 
 import { z } from "zod";
 import { narrate } from "../lib/narrate.js";
 import {
   applyRules,
   MCPManifestSchema,
+  SENTINEL_DEEP_RULES,
   SENTINEL_QUICK_RULES,
   type MCPManifest,
   type RuleFinding,
@@ -196,8 +197,8 @@ export async function inspectMcp(input: InspectMcpInput): Promise<InspectMcpOutp
     };
   }
 
-  // Phase 5 will swap this for SENTINEL_DEEP_RULES when mode === "deep".
-  const ruleSet: SentinelRule[] = SENTINEL_QUICK_RULES;
+  const ruleSet: SentinelRule[] =
+    mode === "deep" ? SENTINEL_DEEP_RULES : SENTINEL_QUICK_RULES;
 
   const loaded = await loadManifest(target);
   if (!loaded.ok) {

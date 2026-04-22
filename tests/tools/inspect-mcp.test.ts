@@ -117,3 +117,86 @@ describe("inspectMcp — quick mode", () => {
     expect(out.summary?.startsWith("[fallback]")).toBe(true);
   });
 });
+
+describe("inspectMcp — deep mode", () => {
+  // A manifest engineered to trip deep-only rules without tripping most
+  // quick rules. Auth + TLS + rate limit are present; the tools themselves
+  // invite deep-mode findings (filesystem access, dynamic exec,
+  // coarse scope, pre-1.0 version, unscoped name).
+  const deepOnlyManifest = {
+    name: "unscoped",
+    version: "0.9.0",
+    transport: "https" as const,
+    auth: { type: "oauth2", scopes: ["messages"] },
+    rate_limit: { requests_per_minute: 60 },
+    tools: [
+      {
+        name: "read_file",
+        description: "Read any file by absolute file_path.",
+      },
+      {
+        name: "run_code",
+        description: "Execute arbitrary Python via eval().",
+      },
+    ],
+  };
+
+  it("returns auth_required when no api_key is supplied", async () => {
+    const out = await inspectMcp({ target: JSON.stringify(deepOnlyManifest), mode: "deep" });
+    expect(out).toMatchObject({ error: "auth_required" });
+    // error shape — no risk fields leak out
+    expect("risk_score" in out).toBe(false);
+  });
+
+  it("runs the full 26-rule set when api_key is supplied", async () => {
+    const deepOut = await inspectMcp({
+      target: JSON.stringify(deepOnlyManifest),
+      mode: "deep",
+      api_key: "anything-non-empty",
+    });
+    const quickOut = await inspectMcp({
+      target: JSON.stringify(deepOnlyManifest),
+      mode: "quick",
+    });
+    // Deep mode should see strictly more findings than quick on this fixture.
+    if ("findings" in deepOut && "findings" in quickOut) {
+      expect(deepOut.findings.length).toBeGreaterThan(quickOut.findings.length);
+      const deepIds = new Set(deepOut.findings.map((f) => f.rule_id));
+      // At least a couple of deep-only rule IDs must show up.
+      expect(deepIds.has("S-015") || deepIds.has("S-023") || deepIds.has("S-024")).toBe(true);
+    } else {
+      throw new Error("deep + key should succeed");
+    }
+  });
+
+  it("quick mode ignores api_key and only runs the top-8 set", async () => {
+    const out = await inspectMcp({
+      target: JSON.stringify(deepOnlyManifest),
+      mode: "quick",
+      api_key: "still-quick-please",
+    });
+    if ("findings" in out) {
+      // None of the deep-only IDs should appear in a quick-mode run.
+      const ids = out.findings.map((f) => f.rule_id);
+      const deepOnlyIds = [
+        "S-005", "S-006", "S-009", "S-011", "S-012", "S-013", "S-014",
+        "S-015", "S-016", "S-018", "S-019", "S-020", "S-021", "S-022",
+        "S-023", "S-024", "S-025", "S-026",
+      ];
+      for (const id of deepOnlyIds) {
+        expect(ids).not.toContain(id);
+      }
+    } else {
+      throw new Error("quick mode should succeed");
+    }
+  });
+
+  it("rejects deep mode with an empty-string api_key", async () => {
+    const out = await inspectMcp({
+      target: JSON.stringify(deepOnlyManifest),
+      mode: "deep",
+      api_key: "",
+    });
+    expect(out).toMatchObject({ error: "auth_required" });
+  });
+});
