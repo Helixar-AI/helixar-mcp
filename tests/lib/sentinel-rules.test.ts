@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyRules,
+  SENTINEL_DEEP_RULES,
   SENTINEL_QUICK_RULES,
   type MCPManifest,
   type SentinelRule,
@@ -192,5 +193,330 @@ describe("applyRules — multiple findings", () => {
     const findings = applyRules(m, oneRule);
     expect(findings).toHaveLength(1);
     expect(findings[0]?.rule_id).toBe("S-017");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Deep rule set — 18 additional rules (26 total)
+// ────────────────────────────────────────────────────────────────────────────
+
+describe("SENTINEL_DEEP_RULES", () => {
+  it("contains exactly 26 rules (8 quick + 18 deep)", () => {
+    expect(SENTINEL_DEEP_RULES).toHaveLength(26);
+  });
+
+  it("includes every quick rule by ID", () => {
+    const deepIds = new Set(SENTINEL_DEEP_RULES.map((r) => r.id));
+    for (const quick of SENTINEL_QUICK_RULES) {
+      expect(deepIds.has(quick.id)).toBe(true);
+    }
+  });
+
+  it("all rule IDs are unique across the deep set", () => {
+    const ids = SENTINEL_DEEP_RULES.map((r) => r.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("every rule has the required fields", () => {
+    for (const rule of SENTINEL_DEEP_RULES) {
+      expect(rule.id).toMatch(/^S-\d{3}$/);
+      expect(["low", "medium", "high", "critical"]).toContain(rule.severity);
+      expect(rule.description.length).toBeGreaterThan(10);
+      expect(rule.remediation.length).toBeGreaterThan(10);
+      expect(typeof rule.check).toBe("function");
+    }
+  });
+
+  it("returns no findings on a clean manifest", () => {
+    // The cleanManifest has namespaced auth scopes, a versioned tool set,
+    // pagination-free but non-export tool names, and a 1.x version.
+    const cleanDeepManifest: MCPManifest = {
+      ...cleanManifest,
+      name: "helixar/well-behaved-mcp",
+      tools: [
+        {
+          name: "search_inbox",
+          description: "Search the user's inbox by keyword.",
+          parameters: {
+            type: "object",
+            properties: {
+              q: { type: "string" },
+              limit: { type: "number" },
+            },
+          },
+        },
+      ],
+    };
+    const findings = applyRules(cleanDeepManifest, SENTINEL_DEEP_RULES);
+    expect(findings).toEqual([]);
+  });
+});
+
+// Helper: run only the deep-only rule with the given ID.
+function runOnly(id: string, m: MCPManifest) {
+  const rule = SENTINEL_DEEP_RULES.find((r) => r.id === id);
+  if (!rule) throw new Error(`rule ${id} not found`);
+  return applyRules(m, [rule]);
+}
+
+describe("deep rules — positive fixtures (each rule fires)", () => {
+  const base: MCPManifest = {
+    name: "helixar/base",
+    version: "1.0.0",
+    transport: "https",
+    auth: { type: "oauth2", scopes: ["read:x"] },
+    rate_limit: { requests_per_minute: 60 },
+    tools: [],
+  };
+
+  it("S-005 fires when a tool references a bearer/api_key in a URL query string", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [{ name: "fetch", description: "GET /v1/data?api_key=YOUR_KEY to fetch records." }],
+    };
+    expect(runOnly("S-005", m).length).toBe(1);
+  });
+
+  it("S-006 fires on a mixed/inconsistent auth surface", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [
+        { name: "ping", description: "Public endpoint — no authentication required." },
+        { name: "send", description: "Authenticated: requires oauth scope." },
+      ],
+    };
+    expect(runOnly("S-006", m).length).toBe(1);
+  });
+
+  it("S-009 fires when a list/get-all tool declares no pagination", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [
+        {
+          name: "list_users",
+          description: "Return all user rows.",
+          parameters: { type: "object", properties: {} },
+        },
+      ],
+    };
+    expect(runOnly("S-009", m).length).toBe(1);
+  });
+
+  it("S-011 fires when a tool accepts raw SQL or shell parameters", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [
+        {
+          name: "run_query",
+          description: "Execute SQL.",
+          parameters: { type: "object", properties: { sql: { type: "string" } } },
+        },
+      ],
+    };
+    expect(runOnly("S-011", m).length).toBe(1);
+  });
+
+  it("S-012 fires when a tool returns unescaped HTML/markdown to the caller", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [
+        { name: "render", description: "Returns raw html verbatim from the upstream page." },
+      ],
+    };
+    expect(runOnly("S-012", m).length).toBe(1);
+  });
+
+  it("S-013 fires when a tool requires a third-party package without a version pin", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [
+        { name: "bundle", description: "Runs npm install of the latest version of the lodash package." },
+      ],
+    };
+    expect(runOnly("S-013", m).length).toBe(1);
+  });
+
+  it("S-014 fires when a description references a dev/local-only endpoint", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [
+        { name: "ping", description: "Sends a heartbeat to http://localhost:8080/health." },
+      ],
+    };
+    expect(runOnly("S-014", m).length).toBe(1);
+  });
+
+  it("S-015 fires on dynamic code execution tools (eval/exec/run_code)", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [
+        { name: "run_code", description: "Execute arbitrary Python via eval()." },
+      ],
+    };
+    expect(runOnly("S-015", m).length).toBe(1);
+  });
+
+  it("S-016 fires when a tool fetches arbitrary external URLs with no allowlist", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [
+        { name: "http_get", description: "Fetch any url supplied by the caller." },
+      ],
+    };
+    expect(runOnly("S-016", m).length).toBe(1);
+  });
+
+  it("S-018 fires when the manifest exposes an oversized tool surface", () => {
+    const tools = Array.from({ length: 21 }, (_, i) => ({
+      name: `op_${i}`,
+      description: `Well-described operation number ${i}.`,
+    }));
+    const m: MCPManifest = { ...base, tools };
+    expect(runOnly("S-018", m).length).toBe(1);
+  });
+
+  it("S-019 fires when a tool has an empty or trivial description", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [{ name: "do", description: "" }],
+    };
+    expect(runOnly("S-019", m).length).toBe(1);
+  });
+
+  it("S-020 fires on a privileged-sounding tool without an admin scope", () => {
+    const m: MCPManifest = {
+      ...base,
+      auth: { type: "oauth2", scopes: ["read:x"] },
+      tools: [{ name: "admin_reset_passwords", description: "Reset every user's password." }],
+    };
+    expect(runOnly("S-020", m).length).toBe(1);
+  });
+
+  it("S-021 fires on coarse-grained scopes that mix read and write", () => {
+    const m: MCPManifest = {
+      ...base,
+      auth: { type: "oauth2", scopes: ["messages"] },
+    };
+    expect(runOnly("S-021", m).length).toBe(1);
+  });
+
+  it("S-022 fires when a tool description declares an external webhook/callback", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [
+        { name: "notify", description: "Sends the payload to the configured webhook url." },
+      ],
+    };
+    expect(runOnly("S-022", m).length).toBe(1);
+  });
+
+  it("S-023 fires on arbitrary filesystem access tools", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [
+        {
+          name: "read_file",
+          description: "Read any file by absolute file_path.",
+          parameters: { type: "object", properties: { file_path: { type: "string" } } },
+        },
+      ],
+    };
+    expect(runOnly("S-023", m).length).toBe(1);
+  });
+
+  it("S-024 fires on pre-1.0 manifest versions", () => {
+    const m: MCPManifest = { ...base, version: "0.3.0" };
+    expect(runOnly("S-024", m).length).toBe(1);
+  });
+
+  it("S-025 fires when the manifest has no publisher/vendor namespace", () => {
+    const m: MCPManifest = { ...base, name: "unscoped" };
+    expect(runOnly("S-025", m).length).toBe(1);
+  });
+
+  it("S-026 fires when a tool returns secrets/credentials to the caller", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [
+        { name: "get_config", description: "Returns the service account private_key and secret." },
+      ],
+    };
+    expect(runOnly("S-026", m).length).toBe(1);
+  });
+});
+
+describe("deep rules — negative fixtures (each rule stays silent)", () => {
+  const base: MCPManifest = {
+    name: "helixar/base",
+    version: "1.0.0",
+    transport: "https",
+    auth: { type: "oauth2", scopes: ["read:x"] },
+    rate_limit: { requests_per_minute: 60 },
+    tools: [{ name: "ok_tool", description: "Performs a bounded, well-documented operation." }],
+  };
+
+  it("S-005 does not fire when no credential query param is mentioned", () => {
+    expect(runOnly("S-005", base).length).toBe(0);
+  });
+  it("S-006 does not fire on a consistent auth surface", () => {
+    expect(runOnly("S-006", base).length).toBe(0);
+  });
+  it("S-009 does not fire on a non-list tool", () => {
+    expect(runOnly("S-009", base).length).toBe(0);
+  });
+  it("S-011 does not fire on a parameter set without shell/sql names", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [
+        {
+          name: "search",
+          description: "Keyword search.",
+          parameters: { type: "object", properties: { q: { type: "string" } } },
+        },
+      ],
+    };
+    expect(runOnly("S-011", m).length).toBe(0);
+  });
+  it("S-012 does not fire when output is escaped", () => {
+    expect(runOnly("S-012", base).length).toBe(0);
+  });
+  it("S-013 does not fire absent unpinned package references", () => {
+    expect(runOnly("S-013", base).length).toBe(0);
+  });
+  it("S-014 does not fire on a production-looking endpoint mention", () => {
+    expect(runOnly("S-014", base).length).toBe(0);
+  });
+  it("S-015 does not fire on non-eval tooling", () => {
+    expect(runOnly("S-015", base).length).toBe(0);
+  });
+  it("S-016 does not fire on allowlisted URL flows", () => {
+    expect(runOnly("S-016", base).length).toBe(0);
+  });
+  it("S-018 does not fire on a small tool surface", () => {
+    expect(runOnly("S-018", base).length).toBe(0);
+  });
+  it("S-019 does not fire when descriptions are populated", () => {
+    expect(runOnly("S-019", base).length).toBe(0);
+  });
+  it("S-020 does not fire on non-privileged tool names", () => {
+    expect(runOnly("S-020", base).length).toBe(0);
+  });
+  it("S-021 does not fire on verb-prefixed scopes", () => {
+    expect(runOnly("S-021", base).length).toBe(0);
+  });
+  it("S-022 does not fire absent a callback mention", () => {
+    expect(runOnly("S-022", base).length).toBe(0);
+  });
+  it("S-023 does not fire when no filesystem access tool is present", () => {
+    expect(runOnly("S-023", base).length).toBe(0);
+  });
+  it("S-024 does not fire on a 1.x+ manifest version", () => {
+    expect(runOnly("S-024", base).length).toBe(0);
+  });
+  it("S-025 does not fire when the manifest name carries a namespace", () => {
+    expect(runOnly("S-025", base).length).toBe(0);
+  });
+  it("S-026 does not fire when no credential-bearing tool is present", () => {
+    expect(runOnly("S-026", base).length).toBe(0);
   });
 });
