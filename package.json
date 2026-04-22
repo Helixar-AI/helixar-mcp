@@ -1,0 +1,57 @@
+{
+  "name": "@helixar/mcp",
+  "version": "0.0.1",
+  "description": "Helixar Claude Connector — three agentic-AI security tools (Sentinel MCP scanner, HDP delegation validator, Vigil/ATP kill-chain triage) exposed as a remote MCP server.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.10"
+  },
+  "main": "dist/server.js",
+  "bin": {
+    "helixar-mcp": "dist/server.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint . --ext .ts",
+    "start": "node dist/server.js",
+    "dev": "tsx src/server.ts"
+  },
+  "keywords": [
+    "mcp",
+    "claude",
+    "anthropic",
+    "security",
+    "agentic-ai",
+    "helixar"
+  ],
+  "author": "Helixar Limited",
+  "license": "MIT",
+  "homepage": "https://helixar.ai/connect",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Helixar-AI/helixar-mcp"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.30.1",
+    "@modelcontextprotocol/sdk": "1.0.4",
+    "zod": "3.23.8",
+    "zod-to-json-schema": "3.23.5"
+  },
+  "devDependencies": {
+    "@types/node": "20.17.10",
+    "@typescript-eslint/eslint-plugin": "8.18.2",
+    "@typescript-eslint/parser": "8.18.2",
+    "eslint": "9.17.0",
+    "tsx": "4.19.2",
+    "typescript": "5.7.2",
+    "vitest": "2.1.8"
+  }
+}
