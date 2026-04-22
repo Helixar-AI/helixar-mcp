@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Helixar Security MCP server — registers the three tools and runs over
-// stdio for local Claude Desktop and dev. The Cloudflare Workers /
-// remote HTTP transport adapter lives in src/worker.ts (Phase 7).
+// Helixar Security MCP server — registers Helixar's public MCP tools and
+// runs over stdio for local Claude Desktop and dev. The Cloudflare
+// Workers / remote HTTP transport adapter lives in src/worker.ts
+// (Phase 7).
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -19,10 +20,6 @@ import {
   InspectMcpInputSchema,
   inspectMcp,
 } from "./tools/inspect-mcp.js";
-import {
-  TriageAlertInputSchema,
-  triageAlert,
-} from "./tools/triage-alert.js";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Tool descriptors
@@ -51,14 +48,6 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
       "output cites the IETF draft and Zenodo DOI.",
     inputSchema: zodToJsonSchema(HdpValidateInputSchema),
   },
-  {
-    name: "helixar_triage_alert",
-    description:
-      "Triage a Vigil / ATP detection payload into a kill-chain stage (Preparation / Positioning / " +
-      "Expansion / Objective) with a Claude-generated narrative in your choice of executive, " +
-      "technical, or brief format. Severity is hard-capped at 'high' on output.",
-    inputSchema: zodToJsonSchema(TriageAlertInputSchema),
-  },
 ];
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -77,11 +66,6 @@ export async function dispatchTool(
       >;
     case "helixar_hdp_validate":
       return (await hdpValidate(args as Parameters<typeof hdpValidate>[0])) as unknown as Record<
-        string,
-        unknown
-      >;
-    case "helixar_triage_alert":
-      return (await triageAlert(args as Parameters<typeof triageAlert>[0])) as unknown as Record<
         string,
         unknown
       >;

@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { TOOL_DESCRIPTORS, dispatchTool } from "../src/server.js";
 
 describe("MCP tool registry", () => {
-  it("registers exactly the three tools", () => {
+  it("registers the currently-shippable tools", () => {
     const names = TOOL_DESCRIPTORS.map((t) => t.name).sort();
-    expect(names).toEqual(["helixar_hdp_validate", "helixar_inspect_mcp", "helixar_triage_alert"]);
+    expect(names).toEqual(["helixar_hdp_validate", "helixar_inspect_mcp"]);
   });
 
   it("every descriptor has a non-empty description and a JSON Schema inputSchema", () => {
@@ -37,13 +37,6 @@ describe("dispatchTool", () => {
       chain: { root_principal: "user:a", hops: [] },
     });
     expect(out).toMatchObject({ draft_reference: expect.any(String), doi: expect.any(String) });
-  });
-
-  it("routes helixar_triage_alert", async () => {
-    const out = await dispatchTool("helixar_triage_alert", {
-      payload: { alert_id: "a-1", indicators: ["scan:internal"] },
-    });
-    expect(out).toMatchObject({ alert_id: "a-1", stage: expect.any(String) });
   });
 
   it("returns a structured error for an unknown tool", async () => {

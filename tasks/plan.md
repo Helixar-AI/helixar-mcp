@@ -2,7 +2,11 @@
 
 ## Overview
 
-The repo at `/Users/siri/helixar-mcp` (remote: `Helixar-AI/helixar-mcp`) is a remote MCP server that exposes three agentic-AI security tools natively inside Claude.ai, Claude Desktop, and Cowork: **`helixar_inspect_mcp`** (Sentinel scanner — viral free tier), **`helixar_hdp_validate`** (HDP delegation chain validator — IETF citation lever), **`helixar_triage_alert`** (Vigil/ATP kill-chain narrator — pilot demo lever).
+The repo at `/Users/siri/helixar-mcp` (remote: `Helixar-AI/helixar-mcp`) is a remote MCP server that exposes Helixar's agentic-AI security tools natively inside Claude.ai, Claude Desktop, and Cowork:
+
+- **`helixar_inspect_mcp`** — Sentinel scanner, viral free tier.
+- **`helixar_hdp_validate`** — HDP delegation chain validator, IETF citation lever.
+- **`helixar_releaseguard`** _(Phase 4-v2, planned)_ — MCP wrapper around [`Helixar-AI/ReleaseGuard`](https://github.com/Helixar-AI/ReleaseGuard), the open-source artifact policy engine. Replaces the revoked `helixar_triage_alert` (see Phase 4 note below).
 
 Source spec is `~/Documents/helixar-claude-connector-plan.docx` (extracted to `/tmp/connector-plan.txt`). The plan there is a 7-week schedule with four phases (A — Foundation, B — Core tools + OAuth, C — Pilot demo + submission prep, D — Submission + launch). This implementation plan re-slices that schedule into vertical, demo-able tasks the agent can build incrementally without losing the strategic intent.
 
@@ -253,7 +257,9 @@ Top-8 (per spec §3 Tool 1, the rows marked `Quick + Deep`):
 
 ---
 
-### Phase 4 — Tool 3: `helixar_triage_alert`
+### Phase 4 — Tool 3: `helixar_triage_alert` — **REVOKED (v0.4.1)**
+
+> **Revoked.** Even with the IP-protection guard, exposing a kill-chain stage classifier and Vigil payload normaliser publicly widens the attack surface too far. Tasks 7–8 below describe the original design for historical context only — the code and tests were removed in `v0.4.1-revoke-triage` and the slot is taken by Phase 4-v2 (`helixar_releaseguard`).
 
 #### Task 7: `lib/vigil-parser.ts` — payload normaliser + kill-chain stage classifier
 
@@ -300,11 +306,93 @@ Top-8 (per spec §3 Tool 1, the rows marked `Quick + Deep`):
 
 ---
 
-### Checkpoint D — Tool 3 shippable
+### Checkpoint D — Tool 3 shippable — **REVOKED**
 
-- [ ] `helixar_triage_alert` works end-to-end across all three formats.
-- [ ] IP-protection guard (forbidden-symbol grep) green.
-- [ ] **Commit + tag `v0.3.0-tool3-triage`**.
+- [x] ~~`helixar_triage_alert` works end-to-end across all three formats.~~ _(revoked v0.4.1)_
+- [x] ~~IP-protection guard (forbidden-symbol grep) green.~~ _(files deleted)_
+- [x] ~~**Commit + tag `v0.3.0-tool3-triage`**.~~ _(tag retained as archaeology; not re-pointed)_
+
+---
+
+### Phase 4-v2 — Tool 3 (replacement): `helixar_releaseguard`
+
+Wraps [`Helixar-AI/ReleaseGuard`](https://github.com/Helixar-AI/ReleaseGuard) — already open-source, Go-based artifact policy engine. Because the underlying engine is public, the MCP tool can expose much more surface without leaking Helixar IP: rule categories, commands, and output formats all live in the ReleaseGuard repo already.
+
+**Tier split (matches `inspect_mcp`):**
+- **Quick / public (authless)** — `releaseguard check`: scan an artifact or repo target for secrets, metadata leaks, license gaps, forbidden files. Report-only, no writes.
+- **Deep (auth-gated)** — the full `harden` pipeline (`fix` + `obfuscate` + `sign` + `attest`, plus SBOM generation). Requires `api_key` (any non-empty string for v1, real OAuth in Phase 7).
+
+**Architecture decision — execution model:** the MCP tool shells out to a local `releaseguard` binary (documented as a system dependency in the README). A future variant can proxy to a ReleaseGuard Cloud API when that endpoint is public. Either way the MCP tool itself is a thin normaliser → CLI invocation → JSON parse → `narrate()` wrapper, with no ReleaseGuard logic re-implemented in TypeScript.
+
+#### Task 7-v2: `lib/releaseguard-runner.ts` — CLI adapter
+
+**Description.** Shell out to the `releaseguard` binary. Signature: `runReleaseGuard(target: string, command: "check" | "fix" | "harden" | "sbom", options: { format?: "json" | "sarif"; config?: string }): Promise<RunResult>`. Uses `child_process.spawn` with `--format json` and captures stdout/stderr. Returns `{ ok: boolean; findings: ReleaseGuardFinding[]; raw: unknown; stderr: string }`. Missing-binary case returns a structured `{ ok: false, reason: "binary_missing" }` instead of throwing.
+
+**Acceptance criteria:**
+- [ ] Adapter never throws — all failure modes returned as structured results.
+- [ ] Handles binary-missing, non-zero exit, malformed-JSON output paths distinctly.
+- [ ] `ReleaseGuardFinding` type mirrors the CLI's JSON shape (rule id, severity, category, path, evidence) — derived from the ReleaseGuard repo's `--format json` output.
+- [ ] No ReleaseGuard rules are re-implemented; this file only normalises the CLI's output into our `RuleFinding` shape.
+
+**Verification:**
+- [ ] Unit test with a mocked `spawn` that returns a fixture JSON → parses into `findings[]`.
+- [ ] Unit test: missing binary → `{ ok: false, reason: "binary_missing" }`.
+- [ ] Unit test: exit != 0 with warnings-only output → `ok: true` with findings (CLI uses exit codes for policy gates, not for tool errors).
+
+**Dependencies:** Task 1.
+**Files:** `src/lib/releaseguard-runner.ts`, `tests/lib/releaseguard-runner.test.ts`.
+**Scope:** M.
+
+---
+
+#### Task 8-v2: `tools/releaseguard.ts` — `helixar_releaseguard` end-to-end
+
+**Description.** MCP tool. Input: `target` (filesystem path or git repo URL), `mode: "quick" | "deep"` (default `quick`), `command?: "check" | "fix" | "harden" | "sbom"`, `format?: "brief" | "technical" | "executive"`, `api_key?`. Quick mode is locked to `command: "check"` regardless of input. Deep mode allows the full command set and requires `api_key`.
+
+Output shape mirrors `inspect_mcp`: `{ risk_score, risk_level, findings[], summary, artifact_ref?, sbom_ref? }`. `artifact_ref` and `sbom_ref` populated only by deep-mode `harden`/`sbom` runs.
+
+**Acceptance criteria:**
+- [ ] Zod input schema. `target` required; `mode` defaults to `quick`.
+- [ ] Quick mode + any `command` → coerced to `check`. Never writes to the target.
+- [ ] Deep mode without `api_key` → structured `{ error: "auth_required", message: … }` (same shape as `inspect_mcp`).
+- [ ] Binary-missing → structured `{ error: "dependency_missing", message: "releaseguard CLI not found; install via https://github.com/Helixar-AI/ReleaseGuard" }`.
+- [ ] Severity → score weights match `inspect_mcp` (crit=40, high=20, med=10, low=5, cap 100); same `risk_level` buckets.
+- [ ] `summary` is a string; fallback narratives start with `[fallback]`.
+
+**Verification:**
+- [ ] Unit test: quick mode + clean fixture JSON → `risk_level: "NONE"`, `command` forced to `check`.
+- [ ] Unit test: deep mode w/o api_key → `auth_required`.
+- [ ] Unit test: binary-missing path → `dependency_missing`.
+- [ ] Unit test: deep mode + api_key + `harden` → output includes `artifact_ref`.
+- [ ] Self-scan integration test (optional, skipped in CI when binary absent): `target: "./"` → findings array populated.
+
+**Dependencies:** Tasks 1, 2, 7-v2.
+**Files:** `src/tools/releaseguard.ts`, `tests/tools/releaseguard.test.ts`.
+**Scope:** M.
+
+---
+
+#### Task 8.5-v2: Register `helixar_releaseguard` in `server.ts`
+
+**Description.** Add the descriptor + dispatch case. Total registered tools returns to 3.
+
+**Acceptance criteria:**
+- [ ] `TOOL_DESCRIPTORS` length = 3.
+- [ ] `dispatchTool("helixar_releaseguard", ...)` routes correctly.
+- [ ] Existing `server.test.ts` updated: expected name list → `[hdp_validate, inspect_mcp, releaseguard]`.
+
+**Dependencies:** Task 8-v2.
+**Files:** `src/server.ts`, `tests/server.test.ts`.
+**Scope:** S.
+
+---
+
+### Checkpoint D-v2 — Tool 3 (ReleaseGuard) shippable
+
+- [ ] `helixar_releaseguard` works end-to-end (quick + deep).
+- [ ] Binary-missing path returns a structured error.
+- [ ] Tool registered in `server.ts`; registry test green.
+- [ ] **Commit + tag `v0.5.0-tool3-releaseguard`**.
 
 ---
 

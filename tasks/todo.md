@@ -24,11 +24,18 @@ Status: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked
 - [x] **6.** `tools/hdp-validate.ts` — end-to-end with draft + DOI always emitted — _S_
 - [x] **Checkpoint C:** Tool 2 shippable, tag `v0.2.0-tool2-hdp`
 
-## Phase 4 — Tool 3: `helixar_triage_alert`
+## Phase 4 — Tool 3: `helixar_triage_alert` — **REVOKED (v0.4.1)**
 
-- [x] **7.** `lib/vigil-parser.ts` — normalizer + stage classifier (severity capped at high) — _M_
-- [x] **8.** `tools/triage-alert.ts` — three formats, IP-protection guard — _M_
-- [x] **Checkpoint D:** Tool 3 shippable, tag `v0.3.0-tool3-triage`
+- [x] ~~**7.** `lib/vigil-parser.ts` — normalizer + stage classifier~~ _(deleted, IP exposure)_
+- [x] ~~**8.** `tools/triage-alert.ts` — three formats, IP-protection guard~~ _(deleted)_
+- [x] ~~**Checkpoint D:** Tool 3 shippable, tag `v0.3.0-tool3-triage`~~ _(tag retained as archaeology)_
+
+## Phase 4-v2 — Tool 3 replacement: `helixar_releaseguard`
+
+- [ ] **7-v2.** `lib/releaseguard-runner.ts` — CLI adapter (shell out, normalise JSON output) — _M_
+- [ ] **8-v2.** `tools/releaseguard.ts` — quick/deep tiers, auth gate, `inspect_mcp`-shaped output — _M_
+- [ ] **8.5-v2.** Register `helixar_releaseguard` in `server.ts` — _S_
+- [ ] **Checkpoint D-v2:** Tool 3 (ReleaseGuard) shippable, tag `v0.5.0-tool3-releaseguard`
 
 ## Phase 5 — Tool 1 deep mode + auth gate
 
