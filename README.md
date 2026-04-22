@@ -77,4 +77,4 @@ Per the implementation plan §6, internal detection methodology, Hunch Mode inte
 
 ## License
 
-MIT — see [`LICENSE`](./LICENSE).
+Apache-2.0 — see [`LICENSE`](./LICENSE) and [`NOTICE`](./NOTICE).

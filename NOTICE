@@ -1,0 +1,20 @@
+Helixar Security MCP Connector
+Copyright 2026 Helixar Limited
+
+This product includes software developed at Helixar Limited (https://helixar.ai).
+
+This product references the following external specifications and identifiers:
+
+  - HDP — Human Delegation Provenance Protocol
+    IETF draft: draft-helixar-hdp-agentic-delegation-00
+    Subject to IETF Trust Legal Provisions (https://trustee.ietf.org/license-info).
+
+  - Companion paper: "HDP: A Lightweight Cryptographic Protocol for Human
+    Delegation Provenance in Agentic AI Systems" — arXiv:2604.04522,
+    Asiri Dalugoda (2026), licensed CC BY 4.0.
+
+  - Reference implementation snapshot: Zenodo DOI 10.5281/zenodo.19332023
+    (the licence of any individual snapshot is recorded in its Zenodo metadata
+    and may differ from this product's licence).
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
