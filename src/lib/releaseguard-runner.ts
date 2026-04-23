@@ -235,9 +235,22 @@ function installExitHandlersOnce(): void {
       }
     }
   };
+  // NOTE: attaching a SIGINT / SIGTERM listener suppresses Node's default
+  // terminate-on-signal behaviour. If we just killed children and returned,
+  // every process importing this module (including `src/server.ts`, the MCP
+  // stdio server) would stop responding to Ctrl-C and `kill` — the signal
+  // would fire, children would die, and the parent would keep running. We
+  // therefore explicitly re-exit with the conventional 128+signo codes.
+  // The plain "exit" handler must NOT call process.exit — that would recurse.
   process.on("exit", killAll);
-  process.on("SIGINT", killAll);
-  process.on("SIGTERM", killAll);
+  process.on("SIGINT", () => {
+    killAll();
+    process.exit(130);
+  });
+  process.on("SIGTERM", () => {
+    killAll();
+    process.exit(143);
+  });
 }
 
 // ───────────────────────────────────────────────────────────────────────────

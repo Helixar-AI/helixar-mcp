@@ -650,3 +650,49 @@ describe("sanitiseStderr", () => {
     expect(clean).not.toMatch(/truncated/);
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// Signal handler re-exit: attaching SIGINT/SIGTERM handlers suppresses
+// Node's default terminate-on-signal. The handlers must therefore call
+// process.exit(130|143) themselves after killing children; otherwise any
+// process importing this module — including src/server.ts — would stop
+// responding to Ctrl-C.
+// ───────────────────────────────────────────────────────────────────────────
+describe("runReleaseGuard — signal handlers re-exit", () => {
+  it("SIGINT handler calls process.exit(130) after killing children", async () => {
+    // The handlers are installed lazily on first runReleaseGuard() call, so
+    // trigger the install by issuing a normal run first.
+    mockedSpawn.mockReturnValue(
+      fakeChildProcess({ kind: "ok", stdout: FIXTURE_CLEAN }) as never,
+    );
+    await runReleaseGuard("./dist", "check");
+
+    const exitSpy = vi
+      .spyOn(process, "exit")
+      .mockImplementation(() => undefined as never);
+    try {
+      // Emit SIGINT synthetically — the installed listener will fire.
+      process.emit("SIGINT", "SIGINT");
+      expect(exitSpy).toHaveBeenCalledWith(130);
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
+
+  it("SIGTERM handler calls process.exit(143) after killing children", async () => {
+    mockedSpawn.mockReturnValue(
+      fakeChildProcess({ kind: "ok", stdout: FIXTURE_CLEAN }) as never,
+    );
+    await runReleaseGuard("./dist", "check");
+
+    const exitSpy = vi
+      .spyOn(process, "exit")
+      .mockImplementation(() => undefined as never);
+    try {
+      process.emit("SIGTERM", "SIGTERM");
+      expect(exitSpy).toHaveBeenCalledWith(143);
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
+});
