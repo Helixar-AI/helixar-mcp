@@ -190,7 +190,7 @@ export async function inspectMcp(input: InspectMcpInput): Promise<InspectMcpOutp
   }
   const { target, mode, context, api_key } = parsedInput.data;
 
-  if (mode === "deep" && !api_key) {
+  if (mode === "deep" && !api_key?.trim()) {
     return {
       error: "auth_required",
       message: "deep mode requires an api_key — quick mode is the public/authless tier",

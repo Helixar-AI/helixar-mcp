@@ -165,7 +165,7 @@ export async function releaseguard(
   }
   const { target, mode, command: requestedCommand, api_key } = parsed.data;
 
-  if (mode === "deep" && !api_key) {
+  if (mode === "deep" && !api_key?.trim()) {
     return {
       error: "auth_required",
       message: "deep mode requires an api_key — quick mode is the public/authless tier",
@@ -227,12 +227,12 @@ export async function releaseguard(
     command,
   };
   if (policyResult) success.policy_result = policyResult;
-  if (command === "harden" && typeof run.raw.evidence_dir === "string") {
-    success.artifact_ref = run.raw.evidence_dir;
-  }
-  if (command === "sbom" && typeof run.raw.evidence_dir === "string") {
-    success.sbom_ref = run.raw.evidence_dir;
-  }
+  const evidenceDir =
+    typeof run.raw.evidence_dir === "string" && run.raw.evidence_dir.length > 0
+      ? run.raw.evidence_dir
+      : undefined;
+  if (command === "harden" && evidenceDir) success.artifact_ref = evidenceDir;
+  if (command === "sbom" && evidenceDir) success.sbom_ref = evidenceDir;
   return success;
 }
 

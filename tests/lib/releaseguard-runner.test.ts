@@ -200,12 +200,33 @@ describe("runReleaseGuard — structured error paths", () => {
 });
 
 describe("runReleaseGuard — argv composition", () => {
-  it("invokes releaseguard <command> <target> --format json", async () => {
+  it("places flags before the -- separator and target after", async () => {
+    // Guards against argv injection: if target comes before flags, a caller
+    // passing target="--help" would be parsed by cobra as a flag, not a
+    // positional path. The -- separator ends flag parsing so everything
+    // after it is strictly positional.
     mockedSpawn.mockReturnValue(fakeChildProcess({ kind: "ok", stdout: FIXTURE_CLEAN }) as never);
     await runReleaseGuard("./dist", "harden");
     const [binary, args] = mockedSpawn.mock.calls[0] ?? [];
     expect(binary).toBe("releaseguard");
-    expect(args).toEqual(["harden", "./dist", "--format", "json"]);
+    expect(args).toEqual(["harden", "--format", "json", "--", "./dist"]);
+  });
+
+  it("passes a flag-shaped target unchanged as a positional after --", async () => {
+    // Regression for argv-injection: target="--help" must reach the CLI as
+    // a positional arg, not be eaten by cobra as the --help flag.
+    mockedSpawn.mockReturnValue(fakeChildProcess({ kind: "ok", stdout: FIXTURE_CLEAN }) as never);
+    await runReleaseGuard("--help", "check");
+    const [, args] = mockedSpawn.mock.calls[0] ?? [];
+    expect(args).toBeDefined();
+    const dashDashIndex = (args ?? []).indexOf("--");
+    expect(dashDashIndex).toBeGreaterThan(-1);
+    // Target must appear AFTER the -- separator.
+    expect((args ?? [])[dashDashIndex + 1]).toBe("--help");
+    // And before the separator there must be no bare "--help" (i.e. target
+    // hasn't been duplicated into the flag section).
+    const preSeparator = (args ?? []).slice(0, dashDashIndex);
+    expect(preSeparator).not.toContain("--help");
   });
 
   it("honours binaryPath and config overrides", async () => {
@@ -218,5 +239,9 @@ describe("runReleaseGuard — argv composition", () => {
     expect(binary).toBe("/usr/local/bin/releaseguard");
     expect(args).toContain("--config");
     expect(args).toContain(".releaseguard.prod.yml");
+    // --config must still be on the flag side of the -- separator.
+    const dashDashIndex = (args ?? []).indexOf("--");
+    const configIndex = (args ?? []).indexOf("--config");
+    expect(configIndex).toBeLessThan(dashDashIndex);
   });
 });

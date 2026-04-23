@@ -143,6 +143,14 @@ describe("releaseguard — deep mode auth gate", () => {
     expect(mockedRun).not.toHaveBeenCalled();
   });
 
+  it("rejects deep mode with a whitespace-only api_key", async () => {
+    // Review S3: a truthy-but-empty-after-trim key should not pass the
+    // gate — this is the shape a tokenisation bug would emit.
+    const out = await releaseguard({ target: "./dist", mode: "deep", api_key: "   " });
+    expect(out).toMatchObject({ error: "auth_required" });
+    expect(mockedRun).not.toHaveBeenCalled();
+  });
+
   it("allows any non-empty api_key through in v1", async () => {
     mockedRun.mockResolvedValue({
       ok: true,
@@ -191,6 +199,25 @@ describe("releaseguard — deep mode commands", () => {
       mode: "deep",
       api_key: "k",
       command: "check",
+    });
+    if ("error" in out) throw new Error("expected success");
+    expect(out.artifact_ref).toBeUndefined();
+  });
+
+  it("does not set artifact_ref when evidence_dir is an empty string", async () => {
+    // Review S2: `typeof evidence_dir === "string"` is truthy for "".
+    // An empty ref is worse than omitting, so the tool must guard on length.
+    mockedRun.mockResolvedValue({
+      ok: true,
+      findings: [],
+      raw: { ...CLEAN_RAW, evidence_dir: "" },
+      stderr: "",
+    });
+    const out = await releaseguard({
+      target: "./dist",
+      mode: "deep",
+      api_key: "k",
+      command: "harden",
     });
     if ("error" in out) throw new Error("expected success");
     expect(out.artifact_ref).toBeUndefined();

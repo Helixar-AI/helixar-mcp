@@ -92,8 +92,13 @@ function composeArgs(
   target: string,
   config?: string,
 ): string[] {
-  const args = [command, target, "--format", "json"];
+  // Flags first, `--` separator, then the positional target. Without the
+  // separator, a caller-supplied target that starts with `-` (e.g. "--help",
+  // "--config=…") would be parsed by cobra as a flag and alter CLI
+  // behaviour — an argv-injection surface.
+  const args: string[] = [command, "--format", "json"];
   if (config) args.push("--config", config);
+  args.push("--", target);
   return args;
 }
 

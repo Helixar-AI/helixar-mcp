@@ -199,4 +199,15 @@ describe("inspectMcp — deep mode", () => {
     });
     expect(out).toMatchObject({ error: "auth_required" });
   });
+
+  it("rejects deep mode with a whitespace-only api_key", async () => {
+    // Review S3 parity with releaseguard: whitespace-only keys must not
+    // pass the gate even though the raw string is truthy.
+    const out = await inspectMcp({
+      target: JSON.stringify(deepOnlyManifest),
+      mode: "deep",
+      api_key: "   ",
+    });
+    expect(out).toMatchObject({ error: "auth_required" });
+  });
 });
