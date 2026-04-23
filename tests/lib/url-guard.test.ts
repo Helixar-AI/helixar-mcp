@@ -13,6 +13,7 @@ vi.mock("node:dns/promises", () => ({
 
 import {
   _createPinnedDispatcher,
+  expandIPv6,
   guardedFetch,
   isPrivateAddress,
 } from "../../src/lib/url-guard.js";
@@ -107,6 +108,100 @@ describe("isPrivateAddress", () => {
   it("allows a public IPv6 (e.g. 2606:2800::1)", () => {
     expect(isPrivateAddress("2606:2800::1", 6)).toBe(false);
   });
+
+  // Reviewer Critical #2: string-equality against "::1" and
+  // "0:0:0:0:0:0:0:1" let every other equivalent form bypass. Canonicalising
+  // to 8 numeric groups before classifying fixes all of these — add each
+  // documented bypass as an explicit test.
+  it("rejects IPv6 loopback in every zero-compressed form", () => {
+    expect(isPrivateAddress("::1", 6)).toBe(true);
+    expect(isPrivateAddress("0:0:0:0:0:0:0:1", 6)).toBe(true);
+    expect(isPrivateAddress("0000:0000:0000:0000:0000:0000:0000:0001", 6)).toBe(true);
+    expect(isPrivateAddress("0::1", 6)).toBe(true);
+    expect(isPrivateAddress("0:0::1", 6)).toBe(true);
+    expect(isPrivateAddress("::0:0:0:0:1", 6)).toBe(true);
+    expect(isPrivateAddress("0:0:0::0:0:1", 6)).toBe(true);
+    // Bracketed literal (as it appears in URL hosts).
+    expect(isPrivateAddress("[0:0:0:0:0:0:0:1]", 6)).toBe(true);
+    // Zone-id suffix.
+    expect(isPrivateAddress("::1%eth0", 6)).toBe(true);
+  });
+
+  it("rejects IPv6 unspecified :: in every equivalent form", () => {
+    expect(isPrivateAddress("::", 6)).toBe(true);
+    expect(isPrivateAddress("0:0:0:0:0:0:0:0", 6)).toBe(true);
+    expect(isPrivateAddress("0000:0000:0000:0000:0000:0000:0000:0000", 6)).toBe(true);
+  });
+
+  it("rejects full fc00::/7 range (ULA), including expanded forms", () => {
+    expect(isPrivateAddress("fc00:0000:0000:0000:0000:0000:0000:0001", 6)).toBe(true);
+    expect(isPrivateAddress("fdff::", 6)).toBe(true);
+    // Boundary — fe00:: is NOT ULA (falls into fe00-fe7f which is reserved
+    // but not our target class) and must not be incorrectly matched by the
+    // old regex /^f[cd][0-9a-f]{0,2}:/ pattern. Keep this as a negative case
+    // to prevent regressions.
+    expect(isPrivateAddress("2606:2800::1", 6)).toBe(false);
+  });
+
+  it("rejects full fe80::/10 range (link-local), including expanded forms", () => {
+    expect(isPrivateAddress("fe80::1", 6)).toBe(true);
+    expect(isPrivateAddress("febf:ffff::1", 6)).toBe(true);
+    expect(isPrivateAddress("fe80:0000:0000:0000:0000:0000:0000:0001", 6)).toBe(true);
+    // fec0:: is site-local (deprecated) and not fe80::/10 — must NOT be
+    // matched as link-local.
+    expect(isPrivateAddress("fec0::1", 6)).toBe(false);
+  });
+});
+
+describe("expandIPv6", () => {
+  it("expands :: to 8 zero groups", () => {
+    expect(expandIPv6("::")).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
+  });
+
+  it("expands ::1 correctly", () => {
+    expect(expandIPv6("::1")).toEqual([0, 0, 0, 0, 0, 0, 0, 1]);
+  });
+
+  it("leaves fully-expanded addresses intact", () => {
+    expect(expandIPv6("0000:0000:0000:0000:0000:0000:0000:0001")).toEqual([
+      0, 0, 0, 0, 0, 0, 0, 1,
+    ]);
+  });
+
+  it("expands mid-address compression", () => {
+    expect(expandIPv6("2001:db8::1")).toEqual([0x2001, 0xdb8, 0, 0, 0, 0, 0, 1]);
+  });
+
+  it("strips zone ids", () => {
+    expect(expandIPv6("fe80::1%eth0")).toEqual([0xfe80, 0, 0, 0, 0, 0, 0, 1]);
+  });
+
+  it("strips surrounding brackets", () => {
+    expect(expandIPv6("[::1]")).toEqual([0, 0, 0, 0, 0, 0, 0, 1]);
+  });
+
+  it("handles embedded IPv4 tails", () => {
+    // ::ffff:127.0.0.1 → groups[5]=0xffff, groups[6]=0x7f00, groups[7]=0x0001
+    expect(expandIPv6("::ffff:127.0.0.1")).toEqual([
+      0, 0, 0, 0, 0, 0xffff, 0x7f00, 0x0001,
+    ]);
+  });
+
+  it("rejects addresses with two :: compressions", () => {
+    expect(expandIPv6("1::2::3")).toBeNull();
+  });
+
+  it("rejects addresses with too many groups", () => {
+    expect(expandIPv6("1:2:3:4:5:6:7:8:9")).toBeNull();
+  });
+
+  it("rejects addresses with invalid hex groups", () => {
+    expect(expandIPv6("gggg::1")).toBeNull();
+  });
+
+  it("rejects embedded IPv4 with out-of-range octet", () => {
+    expect(expandIPv6("::ffff:999.0.0.1")).toBeNull();
+  });
 });
 
 describe("guardedFetch", () => {
@@ -174,22 +269,117 @@ describe("guardedFetch", () => {
     if (!res.ok) expect(res.reason).toMatch(/blocked|private/i);
   });
 
-  it("enforces timeout via AbortController", async () => {
-    mockLookup.mockResolvedValueOnce([{ address: "93.184.216.34", family: 4 }]);
-    const fetchMock = vi.fn(
-      (_url: string, init?: { signal?: AbortSignal }) =>
-        new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener("abort", () => {
-            const err = new Error("aborted");
-            err.name = "AbortError";
-            reject(err);
-          });
-        }),
-    );
+  it("accepts AAAA-only (IPv6) responses from DNS", async () => {
+    // Reviewer Important #6: the suite lacked coverage for hosts with only
+    // AAAA records. Ensure the pipeline resolves them to an IPv6 SafeAddress
+    // and proceeds to fetch rather than rejecting for "unexpected family".
+    mockLookup.mockResolvedValueOnce([{ address: "2001:db8::1", family: 6 }]);
+    const fetchMock = vi.fn(async () => makeResponse(200, [enc("ok")]));
     vi.stubGlobal("fetch", fetchMock);
-    const res = await guardedFetch("https://example.com/", { timeoutMs: 20 });
+    const res = await guardedFetch("https://v6-only.example.com/");
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.text).toBe("ok");
+  });
+
+  it("rejects AAAA-only ::1 (loopback) even when family is 6", async () => {
+    mockLookup.mockResolvedValueOnce([{ address: "::1", family: 6 }]);
+    const res = await guardedFetch("https://v6-loopback.example.com/");
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.reason).toMatch(/timeout/i);
+    if (!res.ok) expect(res.reason).toMatch(/blocked|private/i);
+  });
+
+  it("rejects mixed A + AAAA when the AAAA is private", async () => {
+    // A public IPv4 + a loopback IPv6 — any blocked entry must reject.
+    mockLookup.mockResolvedValueOnce([
+      { address: "93.184.216.34", family: 4 },
+      { address: "::1", family: 6 },
+    ]);
+    const res = await guardedFetch("https://mixed.example.com/");
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toMatch(/blocked|private/i);
+  });
+
+  it("rejection message no longer leaks the resolved IP", async () => {
+    // Reviewer Suggestion: reason strings should not leak the resolved
+    // address (it only helps attackers probe internal topology).
+    mockLookup.mockResolvedValueOnce([{ address: "10.1.2.3", family: 4 }]);
+    const res = await guardedFetch("https://internal.example.com/");
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reason).not.toMatch(/10\.1\.2\.3/);
+      expect(res.reason).toMatch(/blocked_address/);
+    }
+  });
+
+  it("rejects responses with a null body as empty_body", async () => {
+    // Reviewer Important #4: the null-body fallback used to invoke
+    // response.text() without the AbortSignal and check size post-hoc,
+    // letting a 100 MB body bypass the cap. Node 20+ always provides a
+    // streamable body, so we now treat null as an anomaly.
+    mockLookup.mockResolvedValueOnce([{ address: "93.184.216.34", family: 4 }]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        status: 200,
+        ok: true,
+        headers: { get: () => null },
+        body: null,
+        text: async () => "should-never-be-called",
+      } as unknown as Response)),
+    );
+    const res = await guardedFetch("https://example.com/");
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe("empty_body");
+  });
+
+  it("enforces timeout via AbortController (fake timers)", async () => {
+    // Reviewer Important #7: convert the real-setTimeout-based test to fake
+    // timers so we don't depend on scheduler timing. vi.useFakeTimers also
+    // wraps Promise microtasks; we advance the clock by more than the
+    // configured timeout after arming the fetch promise.
+    vi.useFakeTimers();
+    try {
+      mockLookup.mockResolvedValueOnce([{ address: "93.184.216.34", family: 4 }]);
+      const fetchMock = vi.fn(
+        (_url: string, init?: { signal?: AbortSignal }) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              reject(err);
+            });
+          }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const promise = guardedFetch("https://example.com/", { timeoutMs: 20 });
+      // Flush the dns.lookup resolution + fetch arming microtasks, then trip
+      // the abort timer by advancing past the configured timeout.
+      await vi.advanceTimersByTimeAsync(30);
+      const res = await promise;
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.reason).toMatch(/timeout/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds DNS lookup with timeout (fake timers)", async () => {
+    // Reviewer Important #3: a never-resolving DNS lookup must fail fast at
+    // the configured timeout rather than stall forever. The AbortController
+    // that guards fetch() isn't armed until after lookup resolves, so we
+    // need a separate race inside resolveAndValidate.
+    vi.useFakeTimers();
+    try {
+      // DNS mock returns a pending promise — it never resolves.
+      mockLookup.mockImplementationOnce(() => new Promise(() => {}));
+      const promise = guardedFetch("https://example.com/", { timeoutMs: 50 });
+      await vi.advanceTimersByTimeAsync(60);
+      const res = await promise;
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.reason).toMatch(/dns_timeout/i);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("enforces maxBytes and aborts the stream", async () => {
