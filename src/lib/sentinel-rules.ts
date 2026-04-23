@@ -346,6 +346,11 @@ const LIST_PREFIX = /^list_[a-z]/;
 
 const PAGINATION_KEYS = ["limit", "page_size", "pagesize", "cursor", "offset", "page_token"];
 
+// Narrowed to unambiguously shell/SQL-shaped parameter names. Bare
+// "cmd"/"command" were dropped because they collide with legitimate
+// non-shell uses (state-machine actions, device control verbs). Callers
+// who genuinely expose shell input still match via the explicit
+// "shell_cmd" / "bash" / "exec" / "shell" slots.
 const RAW_QUERY_PARAM_NAMES = [
   '"sql"',
   '"raw_sql"',
@@ -353,8 +358,6 @@ const RAW_QUERY_PARAM_NAMES = [
   '"shell"',
   '"shell_cmd"',
   '"bash"',
-  '"cmd"',
-  '"command"',
   '"exec"',
 ];
 
@@ -384,7 +387,6 @@ const DEV_ENDPOINT_PHRASES = [
 ];
 
 const DYNAMIC_EXEC_PATTERNS = [
-  /\beval\(/,
   /\bexec\(/,
   /\brun_code\b/,
   /\bshell_exec\b/,
@@ -409,11 +411,15 @@ const PRIVILEGED_NAME_PATTERNS = [
   /\bsuper_/,
 ];
 
+// Webhook / callback indicators. `"forward to"` was removed because it
+// is common English phrasing (`"forward to the next step"`, `"forward to
+// the agent"`) and triggered on non-webhook descriptions. `"callback
+// endpoint"` is a tighter replacement signal.
 const CALLBACK_PHRASES = [
   "webhook",
   "callback url",
+  "callback endpoint",
   "post to url",
-  "forward to",
   "relay to",
 ];
 
@@ -426,12 +432,14 @@ const FS_NAME_PATTERNS = [
 
 const FS_PARAM_KEYS = ['"file_path"', '"filepath"', '"path"'];
 
-const CREDENTIAL_RETURN_PHRASES = [
-  "private_key",
-  "secret",
-  "password",
-  "api_key",
-  "client_secret",
+// Credential-return regex patterns. Bare nouns like `password` / `secret`
+// triggered on benign descriptions ("password policy", "secret rotation
+// schedule"). Each pattern requires a return-verb ("returns", "response
+// includes/contains") within a ~40-char window of a credential noun so
+// unrelated mentions don't co-occur.
+const CREDENTIAL_RETURN_PATTERNS: RegExp[] = [
+  /\breturns?\b.{0,40}\b(password|secret|private[_-]?key|api[_-]?key|client[_-]?secret)\b/i,
+  /\bresponse\s+(includes|contains)\b.{0,40}\b(password|secret|private[_-]?key|api[_-]?key|client[_-]?secret)\b/i,
 ];
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -787,8 +795,8 @@ const S_026: SentinelRule = {
     "Remove credential-bearing tools. If a rotation workflow is needed, return references or short-lived handles, not the secrets themselves.",
   check: (m) => {
     const offenders = m.tools.filter((t) => {
-      const descLc = (t.description ?? "").toLowerCase();
-      return CREDENTIAL_RETURN_PHRASES.some((p) => descLc.includes(p));
+      const desc = t.description ?? "";
+      return CREDENTIAL_RETURN_PATTERNS.some((p) => p.test(desc));
     });
     return offenders.length > 0
       ? {
