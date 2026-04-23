@@ -258,10 +258,17 @@ function installExitHandlersOnce(): void {
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
+ * Marker appended to a truncated stderr blob. The full returned string
+ * (slice + marker) is guaranteed to be ≤ `maxLen` characters.
+ */
+const TRUNCATION_MARKER = "…[truncated]";
+
+/**
  * Scrub + cap a stderr blob before it crosses the MCP boundary:
  *  - Replace `os.homedir()` globally with `~` so filesystem layout
  *    (usernames, project paths) doesn't leak to the caller / Claude.
- *  - Truncate to `maxLen` characters with a `…[truncated]` marker.
+ *  - Truncate to `maxLen` characters (inclusive of the marker) with a
+ *    `…[truncated]` marker. The JSDoc contract is "≤ maxLen".
  */
 export function sanitiseStderr(s: string, maxLen = 2_000): string {
   const home = homedir();
@@ -273,7 +280,13 @@ export function sanitiseStderr(s: string, maxLen = 2_000): string {
     cleaned = cleaned.replace(new RegExp(escaped, "g"), "~");
   }
   if (cleaned.length > maxLen) {
-    cleaned = cleaned.slice(0, maxLen) + "…[truncated]";
+    // Truncate so that slice + marker ≤ maxLen. If maxLen is shorter than
+    // the marker itself, degenerate to a bare slice of maxLen chars.
+    const keep = Math.max(0, maxLen - TRUNCATION_MARKER.length);
+    cleaned =
+      keep === 0
+        ? cleaned.slice(0, maxLen)
+        : cleaned.slice(0, keep) + TRUNCATION_MARKER;
   }
   return cleaned;
 }
@@ -403,16 +416,22 @@ export async function runReleaseGuard(
       // Stderr overflow is non-fatal — just stop appending. We don't kill
       // the child for a chatty CLI; it's allowed to finish.
       if (stderrBytes >= MAX_STDERR_BYTES) return;
-      const str = chunk.toString();
-      const remaining = MAX_STDERR_BYTES - stderrBytes;
-      if (str.length > remaining) {
-        stderr += str.slice(0, remaining);
-        stderrBytes = MAX_STDERR_BYTES;
+      // Commit to BYTES throughout: `stderrBytes` is a byte count, so the
+      // remaining budget is in bytes. Slicing `str` by character count
+      // would diverge from the byte budget for multi-byte UTF-8 (e.g. a
+      // 4 KB cap but 4 × 4 KB of accumulated chars). Convert to a Buffer,
+      // slice on the byte boundary, decode back — the final codepoint may
+      // be incomplete, which is fine for a diagnostic truncation.
+      const chunkStr = chunk.toString();
+      const chunkBytes = Buffer.byteLength(chunkStr);
+      const remainingBytes = MAX_STDERR_BYTES - stderrBytes;
+      if (chunkBytes <= remainingBytes) {
+        stderr += chunkStr;
+        stderrBytes += chunkBytes;
       } else {
-        stderr += str;
-        stderrBytes += Buffer.isBuffer(chunk)
-          ? chunk.length
-          : Buffer.byteLength(chunk);
+        const buf = Buffer.from(chunkStr);
+        stderr += buf.subarray(0, remainingBytes).toString("utf8");
+        stderrBytes = MAX_STDERR_BYTES;
       }
     });
 

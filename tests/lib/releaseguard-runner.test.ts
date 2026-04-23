@@ -620,9 +620,39 @@ describe("runReleaseGuard — stderr cap", () => {
     const result = await runReleaseGuard("./nope", "check");
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      // Truncated below the raw 10 KB blob.
-      expect(result.stderr.length).toBeLessThanOrEqual(4_096);
+      // Truncated below the raw 10 KB blob, measured in BYTES (the cap
+      // is a byte budget, not a char budget).
+      expect(Buffer.byteLength(result.stderr)).toBeLessThanOrEqual(4_096);
       expect(result.stderr).toContain("e");
+    }
+  });
+
+  it("enforces the cap in BYTES, not chars, for multi-byte UTF-8 stderr", async () => {
+    // Regression: the earlier implementation accumulated in bytes but
+    // truncated by char count. A 10 000-char string of `ü` (2 bytes each)
+    // is 20 000 bytes; the cap must kick in at 4 096 bytes, not 4 096
+    // chars (which would leave ~8 KB accumulated past the byte budget).
+    const multi = "ü".repeat(10_000); // 'ü' × 10 000 = 20 000 UTF-8 bytes
+    const emitter = new EventEmitter() as EventEmitter & {
+      stdout: PassThrough;
+      stderr: PassThrough;
+      kill: (s?: string) => boolean;
+    };
+    emitter.stdout = new PassThrough();
+    emitter.stderr = new PassThrough();
+    emitter.kill = () => true;
+    mockedSpawn.mockReturnValue(emitter as never);
+    queueMicrotask(() => {
+      emitter.stderr.write(multi);
+      emitter.stderr.end();
+      emitter.stdout.end();
+      emitter.emit("close", 2);
+    });
+    const result = await runReleaseGuard("./nope", "check");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // The BYTE length — not the char length — must satisfy the cap.
+      expect(Buffer.byteLength(result.stderr)).toBeLessThanOrEqual(4_096);
     }
   });
 });
@@ -636,12 +666,20 @@ describe("sanitiseStderr", () => {
     expect(clean).toContain("~/project/foo.js");
   });
 
-  it("truncates to maxLen and appends the marker", () => {
+  it("truncates so that slice + marker fit exactly within maxLen", () => {
+    // The JSDoc contract is "≤ maxLen". The previous implementation
+    // returned `maxLen + marker.length` — this regression-pins the fix.
     const raw = "x".repeat(5_000);
     const clean = sanitiseStderr(raw, 100);
-    expect(clean.length).toBeGreaterThanOrEqual(100);
-    expect(clean.length).toBeLessThan(5_000);
+    expect(clean.length).toBe(100);
     expect(clean).toMatch(/…\[truncated\]$/);
+  });
+
+  it("returned length is exactly maxLen for a long input", () => {
+    const raw = "a".repeat(10_000);
+    const clean = sanitiseStderr(raw, 256);
+    expect(clean.length).toBe(256);
+    expect(clean.endsWith("…[truncated]")).toBe(true);
   });
 
   it("leaves short strings unchanged (no truncation marker)", () => {
