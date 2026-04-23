@@ -62,6 +62,15 @@ export interface RunOptions {
   config?: string;
   /** Hard timeout in ms; defaults to 30s. */
   timeoutMs?: number;
+  /**
+   * Maximum bytes of stdout to accumulate before killing the child and
+   * settling with `execution_failed`. Defaults to `MAX_STDOUT_BYTES`
+   * (10 MB). A pathological CLI bug or malicious binary could otherwise
+   * flood memory; the timeout alone bounds the attack window but not the
+   * peak allocation. Exposed primarily so tests can exercise the guard
+   * with a small cap.
+   */
+  maxStdoutBytes?: number;
 }
 
 export type RunResult =
@@ -86,6 +95,13 @@ export type RunResult =
     };
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+
+/**
+ * Default cap on accumulated stdout bytes (10 MB). See `RunOptions.maxStdoutBytes`
+ * for motivation — this is a memory-exhaustion guard, not a correctness check.
+ * Exported so callers can reference the same constant when overriding.
+ */
+export const MAX_STDOUT_BYTES = 10_000_000;
 
 function composeArgs(
   command: ReleaseGuardCommand,
@@ -124,6 +140,7 @@ export async function runReleaseGuard(
   const binary = options.binaryPath ?? "releaseguard";
   const args = composeArgs(command, target, options.config);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxStdoutBytes = options.maxStdoutBytes ?? MAX_STDOUT_BYTES;
 
   let child;
   try {
@@ -137,6 +154,7 @@ export async function runReleaseGuard(
 
   return await new Promise<RunResult>((resolve) => {
     let stdout = "";
+    let stdoutBytes = 0;
     let stderr = "";
     let settled = false;
     const settle = (r: RunResult): void => {
@@ -147,6 +165,25 @@ export async function runReleaseGuard(
     };
 
     child.stdout?.on("data", (chunk: Buffer | string) => {
+      // Track byte length independently of JS string length so callers
+      // using the cap to bound memory get an accurate measure regardless
+      // of whether the producer sends Buffers or strings.
+      const chunkBytes = Buffer.isBuffer(chunk)
+        ? chunk.length
+        : Buffer.byteLength(chunk);
+      stdoutBytes += chunkBytes;
+      if (stdoutBytes > maxStdoutBytes) {
+        // Flood guard: kill the child and surface a helpful stderr.
+        // Skip the string append to avoid any further allocation.
+        child.kill("SIGKILL");
+        settle({
+          ok: false,
+          reason: "execution_failed",
+          exitCode: -1,
+          stderr: stderr || `stdout exceeded ${maxStdoutBytes} bytes`,
+        });
+        return;
+      }
       stdout += chunk.toString();
     });
     child.stderr?.on("data", (chunk: Buffer | string) => {

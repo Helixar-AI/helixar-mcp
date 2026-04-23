@@ -245,3 +245,74 @@ describe("runReleaseGuard — argv composition", () => {
     expect(configIndex).toBeLessThan(dashDashIndex);
   });
 });
+
+describe("runReleaseGuard — stdout cap (S8)", () => {
+  // Build a fake child whose stdout emits a single large chunk of bytes and
+  // then stays open. The runner's cap-guard must kill the child and settle
+  // with execution_failed regardless of whether the stream ever ends.
+  function fakeChildEmittingStdout(chunk: string): EventEmitter & {
+    stdout: PassThrough;
+    stderr: PassThrough;
+    kill: (signal?: string) => boolean;
+    killed: boolean;
+  } {
+    const emitter = new EventEmitter() as EventEmitter & {
+      stdout: PassThrough;
+      stderr: PassThrough;
+      kill: (signal?: string) => boolean;
+      killed: boolean;
+    };
+    emitter.stdout = new PassThrough();
+    emitter.stderr = new PassThrough();
+    emitter.killed = false;
+    emitter.kill = (_signal?: string): boolean => {
+      emitter.killed = true;
+      // Simulate the OS-level close that follows SIGKILL so the runner
+      // won't sit on a half-open stream — though it should have already
+      // settled via the cap-guard before this runs.
+      queueMicrotask(() => {
+        emitter.stdout.end();
+        emitter.stderr.end();
+        emitter.emit("close", null);
+      });
+      return true;
+    };
+    queueMicrotask(() => {
+      emitter.stdout.write(chunk);
+      // Intentionally do NOT end the stream — the runner must kill it.
+    });
+    return emitter;
+  }
+
+  it("settles with execution_failed when stdout exceeds maxStdoutBytes", async () => {
+    const big = "x".repeat(500); // >> 100-byte cap
+    mockedSpawn.mockReturnValue(fakeChildEmittingStdout(big) as never);
+    const result = await runReleaseGuard("./dist", "check", {
+      maxStdoutBytes: 100,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("execution_failed");
+      if (result.reason === "execution_failed") {
+        expect(result.exitCode).toBe(-1);
+        // stderr should mention the cap so the caller can diagnose.
+        expect(result.stderr).toMatch(/stdout exceeded/i);
+        expect(result.stderr).toContain("100");
+      }
+    }
+  });
+
+  it("stays under cap on normal-sized output", async () => {
+    // Baseline regression: FIXTURE_CLEAN is small (< 1 KB) and with the
+    // default 10 MB cap should parse successfully as before.
+    mockedSpawn.mockReturnValue(fakeChildProcess({ kind: "ok", stdout: FIXTURE_CLEAN }) as never);
+    const result = await runReleaseGuard("./dist", "check", {
+      maxStdoutBytes: 10_000_000,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.findings).toEqual([]);
+      expect(result.raw.policy_result?.result).toBe("pass");
+    }
+  });
+});
