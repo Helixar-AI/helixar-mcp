@@ -687,6 +687,45 @@ describe("sanitiseStderr", () => {
     expect(clean).toBe("short message");
     expect(clean).not.toMatch(/truncated/);
   });
+
+  // ── $HOME substitution is path-boundary anchored ─────────────────────
+  // A naive `replace(home, "~")` would turn `/Users/alicejones/foo` into
+  // `~jones/foo` when the real home is `/Users/alice`. The anchor makes
+  // the match require a path-boundary character after the home prefix.
+  it("rewrites $HOME when followed by a path separator", async () => {
+    const { homedir } = await import("node:os");
+    const home = homedir();
+    const clean = sanitiseStderr(`error at ${home}/project/foo.js`);
+    expect(clean).toContain("~/project/foo.js");
+    expect(clean).not.toContain(home);
+  });
+
+  it("rewrites $HOME at end-of-string", async () => {
+    const { homedir } = await import("node:os");
+    const home = homedir();
+    const clean = sanitiseStderr(`cwd=${home}`);
+    expect(clean).toBe("cwd=~");
+  });
+
+  it("rewrites $HOME inside quotes", async () => {
+    const { homedir } = await import("node:os");
+    const home = homedir();
+    const clean = sanitiseStderr(`path="${home}"`);
+    expect(clean).toBe(`path="~"`);
+  });
+
+  it("leaves a homedir PREFIX inside a longer path untouched", async () => {
+    // Regression: `/Users/alice` as a prefix of `/Users/aliceTEST/foo`
+    // must NOT get rewritten. The next char (`T`) is not a path boundary,
+    // so the anchor should refuse the match.
+    const { homedir } = await import("node:os");
+    const home = homedir();
+    const raw = `error at ${home}TEST/foo.js`;
+    const clean = sanitiseStderr(raw);
+    // Input must survive verbatim: no substitution fired.
+    expect(clean).toBe(raw);
+    expect(clean).not.toContain("~TEST");
+  });
 });
 
 // ───────────────────────────────────────────────────────────────────────────

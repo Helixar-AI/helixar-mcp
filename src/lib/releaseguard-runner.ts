@@ -265,8 +265,10 @@ const TRUNCATION_MARKER = "…[truncated]";
 
 /**
  * Scrub + cap a stderr blob before it crosses the MCP boundary:
- *  - Replace `os.homedir()` globally with `~` so filesystem layout
- *    (usernames, project paths) doesn't leak to the caller / Claude.
+ *  - Replace `os.homedir()` globally with `~` — but ONLY at a path
+ *    boundary (next char is `/`, `\`, whitespace, quote, colon, or
+ *    end-of-string). Unanchored replacement would turn `/Users/alice`
+ *    inside `/Users/alicejones/foo` into `~jones/foo`.
  *  - Truncate to `maxLen` characters (inclusive of the marker) with a
  *    `…[truncated]` marker. The JSDoc contract is "≤ maxLen".
  */
@@ -277,7 +279,12 @@ export function sanitiseStderr(s: string, maxLen = 2_000): string {
     // Escape regex metacharacters in home (the user's username might
     // contain `.` on some distros, though it's rare).
     const escaped = home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    cleaned = cleaned.replace(new RegExp(escaped, "g"), "~");
+    // Anchor at a path boundary: the next char must be a separator
+    // (`/`, `\`), whitespace, quote (`"`, `'`), colon, or end-of-string.
+    // This keeps `/Users/alicejones/foo` untouched while still rewriting
+    // `/Users/alice/foo`, `/Users/alice`, `"/Users/alice"`, etc.
+    const homeBoundary = new RegExp(escaped + `(?=[/\\\\\\s"':]|$)`, "g");
+    cleaned = cleaned.replace(homeBoundary, "~");
   }
   if (cleaned.length > maxLen) {
     // Truncate so that slice + marker ≤ maxLen. If maxLen is shorter than
