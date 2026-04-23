@@ -20,6 +20,7 @@ import {
   type RuleFinding,
   type SentinelRule,
 } from "../lib/sentinel-rules.js";
+import { guardedFetch } from "../lib/url-guard.js";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Input + output shapes
@@ -59,6 +60,12 @@ export type InspectMcpOutput = InspectMcpSuccess | InspectMcpError;
 const URL_PATTERN = /^https?:\/\//i;
 const JSON_START = /^\s*[{[]/;
 
+// Manifest size + nesting caps. A hostile caller could pass a 100 MB JSON
+// string or a 10,000-level-deep structure; either would burn CPU in
+// JSON.parse, Zod's recursive validation, or paramsText()'s JSON.stringify.
+const MAX_MANIFEST_BYTES = 1_048_576; // 1 MB
+const MAX_MANIFEST_DEPTH = 32;
+
 interface ParseSuccess {
   ok: true;
   manifest: MCPManifest;
@@ -69,23 +76,42 @@ interface ParseFailure {
 }
 type ParseResult = ParseSuccess | ParseFailure;
 
+function exceedsDepth(value: unknown, cap: number, depth = 0): boolean {
+  if (depth > cap) return true;
+  if (value === null || typeof value !== "object") return false;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (exceedsDepth(item, cap, depth + 1)) return true;
+    }
+    return false;
+  }
+  for (const v of Object.values(value as Record<string, unknown>)) {
+    if (exceedsDepth(v, cap, depth + 1)) return true;
+  }
+  return false;
+}
+
 async function loadManifest(target: string): Promise<ParseResult> {
   let rawText: string;
   if (URL_PATTERN.test(target)) {
-    try {
-      const response = await fetch(target);
-      if (!response.ok) {
-        return { ok: false, reason: `fetch returned ${response.status}` };
-      }
-      rawText = await response.text();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return { ok: false, reason: `fetch failed: ${msg}` };
+    const fetched = await guardedFetch(target, { maxBytes: MAX_MANIFEST_BYTES });
+    if (!fetched.ok) {
+      return { ok: false, reason: fetched.reason };
     }
+    rawText = fetched.text;
   } else if (JSON_START.test(target)) {
     rawText = target;
   } else {
     return { ok: false, reason: "target is neither a URL nor a JSON manifest" };
+  }
+
+  // Size cap — apply uniformly to both branches. guardedFetch already caps
+  // URL responses, but a raw JSON-string caller can still pass anything.
+  if (Buffer.byteLength(rawText, "utf8") > MAX_MANIFEST_BYTES) {
+    return {
+      ok: false,
+      reason: `manifest size exceeds ${MAX_MANIFEST_BYTES} bytes`,
+    };
   }
 
   let parsed: unknown;
@@ -94,6 +120,16 @@ async function loadManifest(target: string): Promise<ParseResult> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, reason: `manifest JSON parse failed: ${msg}` };
+  }
+
+  // Depth cap — applied BEFORE Zod so pathological nesting (e.g. 10k-deep
+  // arrays) can't burn CPU in schema validation or downstream
+  // JSON.stringify() calls.
+  if (exceedsDepth(parsed, MAX_MANIFEST_DEPTH)) {
+    return {
+      ok: false,
+      reason: `manifest JSON nesting exceeds ${MAX_MANIFEST_DEPTH} levels`,
+    };
   }
 
   const validation = MCPManifestSchema.safeParse(parsed);
