@@ -520,3 +520,106 @@ describe("deep rules — negative fixtures (each rule stays silent)", () => {
     expect(runOnly("S-026", base).length).toBe(0);
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// False-positive guards — calibration tests for S-011 / S-022 / S-026.
+// Each of these would trigger under the pre-calibration heuristic; after
+// narrowing the signal the rules must stay silent for these benign cases.
+// ────────────────────────────────────────────────────────────────────────────
+
+describe("deep rules — false-positive guards", () => {
+  const base: MCPManifest = {
+    name: "helixar/base",
+    version: "1.0.0",
+    transport: "https",
+    auth: { type: "oauth2", scopes: ["read:x"] },
+    rate_limit: { requests_per_minute: 60 },
+    tools: [{ name: "ok_tool", description: "Performs a bounded, well-documented operation." }],
+  };
+
+  it("S-011 does not fire on a benign 'command' enum (e.g. device control)", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [
+        {
+          name: "device_control",
+          description: "Send a start/stop control action to a device.",
+          parameters: {
+            type: "object",
+            properties: { command: { enum: ["start", "stop"] } },
+          },
+        },
+      ],
+    };
+    expect(runOnly("S-011", m).length).toBe(0);
+  });
+
+  it("S-011 does not fire on a state-machine 'cmd' action parameter", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [
+        {
+          name: "state_machine_step",
+          description: "Advance the finite-state machine by applying a named action.",
+          parameters: {
+            type: "object",
+            properties: { cmd: { enum: ["next", "reset"] } },
+          },
+        },
+      ],
+    };
+    expect(runOnly("S-011", m).length).toBe(0);
+  });
+
+  it("S-022 does not fire on 'forward to the next agent' (English prose)", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [
+        {
+          name: "chain_step",
+          description: "Forward to the next agent in the chain once the step completes.",
+        },
+      ],
+    };
+    expect(runOnly("S-022", m).length).toBe(0);
+  });
+
+  it("S-026 does not fire on a 'password policy' description", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [
+        {
+          name: "describe_password_policy",
+          description: "Enforces a password policy requiring 12 characters.",
+        },
+      ],
+    };
+    expect(runOnly("S-026", m).length).toBe(0);
+  });
+
+  it("S-026 does not fire on 'password complexity enforcement'", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [
+        {
+          name: "check_complexity",
+          description: "Validates password complexity enforcement for new accounts.",
+        },
+      ],
+    };
+    expect(runOnly("S-026", m).length).toBe(0);
+  });
+
+  it("S-026 does not fire on a generic 'secret rotation schedule' description", () => {
+    const m: MCPManifest = {
+      ...base,
+      tools: [
+        {
+          name: "rotation_status",
+          description: "Describes the secret rotation schedule and the next rotation window.",
+        },
+      ],
+    };
+    expect(runOnly("S-026", m).length).toBe(0);
+  });
+});
