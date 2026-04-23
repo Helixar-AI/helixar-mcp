@@ -5,7 +5,9 @@
 // Deep mode: requires api_key, runs all 26 rules.
 
 import { z } from "zod";
+import { requireDeepAuth } from "../lib/auth-gate.js";
 import { narrate } from "../lib/narrate.js";
+import { UNTRUSTED_INSTRUCTION, untrustedBlock } from "../lib/prompt-guard.js";
 import {
   bucketRiskLevel,
   scoreFindings,
@@ -174,16 +176,21 @@ function buildNarrativePrompt(
   riskLevel: RiskLevel,
   context?: string,
 ): string {
+  // `findings` carry our own rule descriptions (trusted), but the server
+  // name and caller-supplied context are attacker-controllable.
   const findingsText = findings.length === 0
     ? "no findings"
     : findings
         .map((f) => `${f.rule_id} [${f.severity}] ${f.description}`)
         .join("\n");
-  const ctx = context ? `\n\nServer context: ${context}` : "";
+  const contextBlock = context
+    ? "\n\n" + untrustedBlock("server-context", context)
+    : "";
   return [
     "You are a security analyst writing a 3-4 sentence security brief on an MCP server scan.",
+    UNTRUSTED_INSTRUCTION,
     "Stay factual; reference rule IDs only when they materially aid the operator.",
-    `Server name: ${manifest.name}${ctx}`,
+    `Server name: ${untrustedBlock("server-name", manifest.name)}${contextBlock}`,
     `Risk level: ${riskLevel}`,
     `Findings:\n${findingsText}`,
     "Write the brief now.",
@@ -206,12 +213,8 @@ export async function inspectMcp(input: InspectMcpInput): Promise<InspectMcpOutp
   }
   const { target, mode, context, api_key } = parsedInput.data;
 
-  if (mode === "deep" && !api_key?.trim()) {
-    return {
-      error: "auth_required",
-      message: "deep mode requires an api_key — quick mode is the public/authless tier",
-    };
-  }
+  const gateError = requireDeepAuth(mode, api_key);
+  if (gateError) return gateError;
 
   const ruleSet: SentinelRule[] =
     mode === "deep" ? SENTINEL_DEEP_RULES : SENTINEL_QUICK_RULES;

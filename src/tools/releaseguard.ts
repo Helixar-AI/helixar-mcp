@@ -13,7 +13,9 @@
 // scores it, and narrates it.
 
 import { z } from "zod";
+import { requireDeepAuth } from "../lib/auth-gate.js";
 import { narrate } from "../lib/narrate.js";
+import { UNTRUSTED_INSTRUCTION, untrustedBlock } from "../lib/prompt-guard.js";
 import {
   bucketRiskLevel,
   scoreFindings,
@@ -182,6 +184,11 @@ function formatFindingsExecutive(findings: ReleaseGuardToolFinding[]): string {
     : findings.map((f) => `- [${f.severity}] ${f.message}`).join("\n");
 }
 
+// `target` is user-supplied (path / URL) and findings' message/path fields
+// are derived from attacker-controlled artifacts — wrap both in
+// <untrusted> blocks. `command`, `riskLevel`, and `policyLine` come from
+// our own enums / computations and don't need wrapping.
+
 function buildTechnicalPrompt(
   target: string,
   command: ReleaseGuardCommand,
@@ -191,11 +198,12 @@ function buildTechnicalPrompt(
 ): string {
   return [
     "You are a release-engineering reviewer writing a 3-4 sentence brief on an artifact scan.",
+    UNTRUSTED_INSTRUCTION,
     "Stay factual; reference rule IDs, paths, and line numbers when they materially aid the reader.",
-    `Target: ${target}`,
+    `Target:\n${untrustedBlock("target", target)}`,
     `Command: releaseguard ${command}`,
     `Risk level: ${riskLevel}${policyLine}`,
-    `Findings:\n${formatFindingsTechnical(findings)}`,
+    `Findings:\n${untrustedBlock("findings", formatFindingsTechnical(findings))}`,
     "Write the brief now.",
   ].join("\n\n");
 }
@@ -209,12 +217,13 @@ function buildExecutivePrompt(
 ): string {
   return [
     "You are briefing a non-technical executive on a release-readiness scan.",
+    UNTRUSTED_INSTRUCTION,
     "Write 2-3 sentences in plain business language that explain the level of risk this release carries and what the recommended next step is.",
     "The audience is non-technical — avoid jargon such as rule-ID tags like `[CVE-…]` or `[SEC-001]`, CLI flags like `--fail-on`, commit hashes or `SHA`s, and file paths or line numbers. Talk about business impact (customer trust, revenue risk, compliance exposure) rather than implementation detail.",
-    `Target: ${target}`,
+    `Target:\n${untrustedBlock("target", target)}`,
     `Command: releaseguard ${command}`,
     `Risk level: ${riskLevel}${policyLine}`,
-    `Findings:\n${formatFindingsExecutive(findings)}`,
+    `Findings:\n${untrustedBlock("findings", formatFindingsExecutive(findings))}`,
     "Write the executive brief now.",
   ].join("\n\n");
 }
@@ -228,11 +237,12 @@ function buildBriefPrompt(
 ): string {
   return [
     "You are writing a single-sentence headline summary of a release-readiness scan.",
+    UNTRUSTED_INSTRUCTION,
     "Hard limit: 250 characters. Write one sentence, no more. Lead with the risk level and the single most important finding. Omit everything else.",
-    `Target: ${target}`,
+    `Target:\n${untrustedBlock("target", target)}`,
     `Command: releaseguard ${command}`,
     `Risk level: ${riskLevel}${policyLine}`,
-    `Findings:\n${formatFindingsTechnical(findings)}`,
+    `Findings:\n${untrustedBlock("findings", formatFindingsTechnical(findings))}`,
     "Write the ≤250-char headline now.",
   ].join("\n\n");
 }
@@ -263,12 +273,8 @@ export async function releaseguard(
     return { error: "invalid_target", message: targetCheck.message };
   }
 
-  if (mode === "deep" && !api_key?.trim()) {
-    return {
-      error: "auth_required",
-      message: "deep mode requires an api_key — quick mode is the public/authless tier",
-    };
-  }
+  const gateError = requireDeepAuth(mode, api_key);
+  if (gateError) return gateError;
 
   // Quick mode is locked to `check`. Deep mode defaults to `check` when the
   // caller doesn't specify, which keeps behaviour predictable.
