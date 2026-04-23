@@ -1,8 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Mock the runner — each test controls exactly what it returns.
+// Mock the runner — each test controls exactly what it returns. The tool
+// also imports `sanitiseStderr` from the runner module, so re-export the
+// real implementation (imported at the top so the mock doesn't shadow it).
+const { sanitiseStderr: realSanitiseStderr } = await vi.importActual<
+  typeof import("../../src/lib/releaseguard-runner.js")
+>("../../src/lib/releaseguard-runner.js");
+
 vi.mock("../../src/lib/releaseguard-runner.js", () => ({
   runReleaseGuard: vi.fn(),
+  sanitiseStderr: realSanitiseStderr,
 }));
 
 const { runReleaseGuard } = await import("../../src/lib/releaseguard-runner.js");
@@ -49,9 +56,22 @@ const UNSAFE_RAW = {
   evidence_dir: "./.releaseguard/evidence",
 };
 
+// Save + restore ANTHROPIC_API_KEY so tests that unset it don't leak across
+// to other test files in the same vitest worker.
+let savedAnthropicApiKey: string | undefined;
+
 beforeEach(() => {
   mockedRun.mockReset();
+  savedAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
   delete process.env.ANTHROPIC_API_KEY;
+});
+
+afterEach(() => {
+  if (savedAnthropicApiKey === undefined) {
+    delete process.env.ANTHROPIC_API_KEY;
+  } else {
+    process.env.ANTHROPIC_API_KEY = savedAnthropicApiKey;
+  }
 });
 
 describe("releaseguard — quick mode", () => {
@@ -334,5 +354,130 @@ describe("releaseguard — buildPrompt format branching", () => {
     expect(prompt).toContain("dist/bundle.js");
     // And the technical prompt should NOT carry the executive "avoid jargon" block.
     expect(prompt).not.toMatch(/avoid.*jargon/i);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Target scheme validation (security): reject file://, javascript:, etc.
+// and targets with embedded NUL bytes — all of which are unsafe to pass
+// through to the CLI regardless of how the CLI handles them.
+// ───────────────────────────────────────────────────────────────────────────
+describe("releaseguard — target scheme validation", () => {
+  it("rejects file:// URLs with invalid_target", async () => {
+    const out = await releaseguard({
+      target: "file:///etc/passwd",
+      mode: "quick",
+    });
+    expect(out).toMatchObject({ error: "invalid_target" });
+    if ("error" in out) {
+      expect(out.message.toLowerCase()).toContain("file");
+    }
+    expect(mockedRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects javascript: URLs with invalid_target", async () => {
+    const out = await releaseguard({
+      target: "javascript:alert(1)",
+      mode: "quick",
+    });
+    expect(out).toMatchObject({ error: "invalid_target" });
+    expect(mockedRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects jar: URLs with invalid_target", async () => {
+    const out = await releaseguard({
+      target: "jar:file:///tmp/x.jar!/",
+      mode: "quick",
+    });
+    expect(out).toMatchObject({ error: "invalid_target" });
+    expect(mockedRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects targets with embedded NUL bytes", async () => {
+    const out = await releaseguard({
+      target: "./dist\0/etc/passwd",
+      mode: "quick",
+    });
+    expect(out).toMatchObject({ error: "invalid_target" });
+    if ("error" in out) {
+      expect(out.message.toLowerCase()).toMatch(/nul|null/);
+    }
+    expect(mockedRun).not.toHaveBeenCalled();
+  });
+
+  it("accepts plain absolute paths", async () => {
+    mockedRun.mockResolvedValue({
+      ok: true,
+      findings: [],
+      raw: CLEAN_RAW,
+      stderr: "",
+    });
+    const out = await releaseguard({ target: "/var/app/dist", mode: "quick" });
+    expect("error" in out).toBe(false);
+  });
+
+  it("accepts plain relative paths", async () => {
+    mockedRun.mockResolvedValue({
+      ok: true,
+      findings: [],
+      raw: CLEAN_RAW,
+      stderr: "",
+    });
+    const out = await releaseguard({ target: "./dist", mode: "quick" });
+    expect("error" in out).toBe(false);
+  });
+
+  it("accepts https:// URLs", async () => {
+    mockedRun.mockResolvedValue({
+      ok: true,
+      findings: [],
+      raw: CLEAN_RAW,
+      stderr: "",
+    });
+    const out = await releaseguard({
+      target: "https://github.com/Helixar-AI/helixar-mcp",
+      mode: "quick",
+    });
+    expect("error" in out).toBe(false);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Stderr sanitisation — when the tool surfaces stderr from the runner it
+// must first strip the user's HOME path and truncate to a safe length so
+// the Claude-facing payload can't leak filesystem layout.
+// ───────────────────────────────────────────────────────────────────────────
+describe("releaseguard — stderr sanitisation", () => {
+  it("replaces $HOME with ~ in dependency_missing stderr", async () => {
+    const home = process.env.HOME ?? "/home/user";
+    mockedRun.mockResolvedValue({
+      ok: false,
+      reason: "binary_missing",
+      stderr: `not found: ${home}/bin/releaseguard`,
+    });
+    const out = await releaseguard({ target: "./dist", mode: "quick" });
+    expect("error" in out).toBe(true);
+    if ("error" in out) {
+      expect(out.stderr).toBeDefined();
+      expect(out.stderr).not.toContain(home);
+      expect(out.stderr).toContain("~/bin/releaseguard");
+    }
+  });
+
+  it("truncates long stderr and appends the marker in execution_failed", async () => {
+    const huge = "x".repeat(5_000);
+    mockedRun.mockResolvedValue({
+      ok: false,
+      reason: "execution_failed",
+      exitCode: 2,
+      stderr: huge,
+    });
+    const out = await releaseguard({ target: "./dist", mode: "quick" });
+    if ("error" in out) {
+      expect(out.stderr).toBeDefined();
+      // Sanitised stderr is truncated to maxLen (default 2 000) + marker.
+      expect((out.stderr ?? "").length).toBeLessThan(5_000);
+      expect(out.stderr).toMatch(/…\[truncated\]$/);
+    }
   });
 });

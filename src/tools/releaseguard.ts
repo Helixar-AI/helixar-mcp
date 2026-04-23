@@ -21,11 +21,51 @@ import {
 } from "../lib/risk-score.js";
 import {
   runReleaseGuard,
+  sanitiseStderr,
   type ReleaseGuardCommand,
   type ReleaseGuardFinding,
   type ReleaseGuardScanResult,
   type RunResult,
 } from "../lib/releaseguard-runner.js";
+
+// Target validation: reject dangerous URI schemes and control chars. The
+// ReleaseGuard CLI takes either a filesystem path or a git URL, so the
+// only URL schemes we accept are http(s) and git. Anything else
+// (file://, jar://, data:, javascript:, vbscript:, blob:) is a red flag —
+// either a mistake or an attempt to pivot the CLI into fetching something
+// it shouldn't.
+const DANGEROUS_SCHEME_RE = /^(file|jar|data|javascript|vbscript|blob):/i;
+// Match a URL-style scheme prefix so we can whitelist http(s) and git
+// while rejecting everything else. Bare filesystem paths (both absolute
+// and relative) pass through because they don't carry a scheme.
+const SCHEME_PREFIX_RE = /^([a-z][a-z0-9+.-]*):/i;
+const ALLOWED_SCHEMES = new Set(["http", "https", "git"]);
+
+function validateTarget(
+  target: string,
+): { ok: true } | { ok: false; message: string } {
+  if (target.includes("\0")) {
+    return { ok: false, message: "target contains NUL byte" };
+  }
+  const dangerous = DANGEROUS_SCHEME_RE.exec(target);
+  if (dangerous) {
+    return {
+      ok: false,
+      message: `target must be a path or https URL; ${dangerous[1]?.toLowerCase()} not allowed`,
+    };
+  }
+  const schemeMatch = SCHEME_PREFIX_RE.exec(target);
+  if (schemeMatch) {
+    const scheme = (schemeMatch[1] ?? "").toLowerCase();
+    if (!ALLOWED_SCHEMES.has(scheme)) {
+      return {
+        ok: false,
+        message: `target must be a path or https URL; ${scheme} not allowed`,
+      };
+    }
+  }
+  return { ok: true };
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 // Input + output shapes
@@ -215,6 +255,14 @@ export async function releaseguard(
   }
   const { target, mode, command: requestedCommand, api_key } = parsed.data;
 
+  // Scheme / NUL-byte validation runs *after* Zod so we can return the
+  // precise rejection reason. Zod's .refine could fold this in but would
+  // lose the per-scheme error message shape.
+  const targetCheck = validateTarget(target);
+  if (!targetCheck.ok) {
+    return { error: "invalid_target", message: targetCheck.message };
+  }
+
   if (mode === "deep" && !api_key?.trim()) {
     return {
       error: "auth_required",
@@ -242,19 +290,19 @@ export async function releaseguard(
           error: "dependency_missing",
           message:
             "releaseguard CLI not found on PATH — install from https://github.com/Helixar-AI/ReleaseGuard",
-          stderr: run.stderr,
+          stderr: sanitiseStderr(run.stderr),
         };
       case "execution_failed":
         return {
           error: "execution_failed",
           message: `releaseguard exited ${run.exitCode}`,
-          stderr: run.stderr,
+          stderr: sanitiseStderr(run.stderr),
         };
       case "malformed_output":
         return {
           error: "invalid_target",
           message: "releaseguard returned non-JSON output — target may be invalid",
-          stderr: run.stderr,
+          stderr: sanitiseStderr(run.stderr),
         };
     }
   }

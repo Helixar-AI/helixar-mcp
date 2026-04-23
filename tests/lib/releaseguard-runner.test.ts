@@ -2,14 +2,29 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Mock child_process.spawn before importing the runner.
+// Mock child_process before importing the runner. Both spawn (child process
+// creation) and execFileSync (used once at module-load to resolve the binary
+// path via `which`) must be mocked so module import is deterministic and
+// tests don't depend on whether the host has a real `releaseguard` binary.
 vi.mock("node:child_process", () => ({
   spawn: vi.fn(),
+  execFileSync: vi.fn(() => {
+    // Default: no binary on PATH. Individual tests that exercise the
+    // fallback branch reset this with mockImplementation().
+    throw new Error("which: not found");
+  }),
 }));
 
 // Lazy-imported after the mock is set up.
-const { spawn } = await import("node:child_process");
-const { runReleaseGuard } = await import("../../src/lib/releaseguard-runner.js");
+const { spawn, execFileSync } = await import("node:child_process");
+const {
+  runReleaseGuard,
+  buildChildEnv,
+  sanitiseStderr,
+  getResolvedBinaryPath,
+  _resetResolvedBinaryPath,
+  _getInFlightChildren,
+} = await import("../../src/lib/releaseguard-runner.js");
 
 type SpawnResultKind =
   | { kind: "ok"; stdout: string; stderr?: string; exitCode?: number }
@@ -51,13 +66,25 @@ function fakeChildProcess(result: SpawnResultKind): EventEmitter & {
 }
 
 const mockedSpawn = vi.mocked(spawn);
+const mockedExecFileSync = vi.mocked(execFileSync);
 
 beforeEach(() => {
   mockedSpawn.mockReset();
+  mockedExecFileSync.mockReset();
+  // Default fallback: `which` finds /usr/local/bin/releaseguard so the
+  // runner's cached resolution is a stable absolute path for the bulk of
+  // tests. Tests that care about resolution semantics override this and
+  // call `_resetResolvedBinaryPath()` to force re-resolution.
+  mockedExecFileSync.mockReturnValue(
+    Buffer.from("/usr/local/bin/releaseguard\n"),
+  );
+  _resetResolvedBinaryPath();
+  delete process.env.HELIXAR_RELEASEGUARD_BIN;
 });
 
 afterEach(() => {
   mockedSpawn.mockReset();
+  mockedExecFileSync.mockReset();
 });
 
 // A realistic ScanResult fixture, matching internal/model/result.go shape.
@@ -208,7 +235,9 @@ describe("runReleaseGuard — argv composition", () => {
     mockedSpawn.mockReturnValue(fakeChildProcess({ kind: "ok", stdout: FIXTURE_CLEAN }) as never);
     await runReleaseGuard("./dist", "harden");
     const [binary, args] = mockedSpawn.mock.calls[0] ?? [];
-    expect(binary).toBe("releaseguard");
+    // The runner resolves the binary path at module load via `which` —
+    // this matches the default mock above.
+    expect(binary).toBe("/usr/local/bin/releaseguard");
     expect(args).toEqual(["harden", "--format", "json", "--", "./dist"]);
   });
 
@@ -313,6 +342,434 @@ describe("runReleaseGuard — stdout cap (S8)", () => {
     if (result.ok) {
       expect(result.findings).toEqual([]);
       expect(result.raw.policy_result?.result).toBe("pass");
+    }
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Binary-path resolution (security S1.1): pin spawn() to an absolute path
+// so a malicious `releaseguard` earlier in $PATH can't hijack the server.
+// ───────────────────────────────────────────────────────────────────────────
+describe("runReleaseGuard — binary path resolution", () => {
+  it("prefers HELIXAR_RELEASEGUARD_BIN when set to an absolute path", async () => {
+    process.env.HELIXAR_RELEASEGUARD_BIN = "/opt/helixar/bin/releaseguard";
+    _resetResolvedBinaryPath();
+    mockedSpawn.mockReturnValue(
+      fakeChildProcess({ kind: "ok", stdout: FIXTURE_CLEAN }) as never,
+    );
+    await runReleaseGuard("./dist", "check");
+    expect(getResolvedBinaryPath()).toBe("/opt/helixar/bin/releaseguard");
+    const [binary] = mockedSpawn.mock.calls[0] ?? [];
+    expect(binary).toBe("/opt/helixar/bin/releaseguard");
+    // `which` must NOT be consulted when the env override is valid.
+    expect(mockedExecFileSync).not.toHaveBeenCalled();
+  });
+
+  it("ignores HELIXAR_RELEASEGUARD_BIN if it's a relative path and falls back to `which`", async () => {
+    process.env.HELIXAR_RELEASEGUARD_BIN = "./relative/releaseguard";
+    _resetResolvedBinaryPath();
+    mockedExecFileSync.mockReturnValue(
+      Buffer.from("/usr/local/bin/releaseguard\n"),
+    );
+    mockedSpawn.mockReturnValue(
+      fakeChildProcess({ kind: "ok", stdout: FIXTURE_CLEAN }) as never,
+    );
+    await runReleaseGuard("./dist", "check");
+    expect(getResolvedBinaryPath()).toBe("/usr/local/bin/releaseguard");
+  });
+
+  it("falls back to `which releaseguard` and trims the trailing newline", async () => {
+    _resetResolvedBinaryPath();
+    mockedExecFileSync.mockReturnValue(
+      Buffer.from("/opt/homebrew/bin/releaseguard\n"),
+    );
+    mockedSpawn.mockReturnValue(
+      fakeChildProcess({ kind: "ok", stdout: FIXTURE_CLEAN }) as never,
+    );
+    await runReleaseGuard("./dist", "check");
+    expect(mockedExecFileSync).toHaveBeenCalledWith("which", ["releaseguard"]);
+    expect(getResolvedBinaryPath()).toBe("/opt/homebrew/bin/releaseguard");
+  });
+
+  it("returns binary_missing without spawning when neither env nor `which` resolves", async () => {
+    _resetResolvedBinaryPath();
+    mockedExecFileSync.mockImplementation(() => {
+      throw new Error("which: command not found");
+    });
+    const result = await runReleaseGuard("./dist", "check");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("binary_missing");
+      expect(result.stderr.toLowerCase()).toContain("not found");
+    }
+    // Never reach spawn.
+    expect(mockedSpawn).not.toHaveBeenCalled();
+    // Cached as null — subsequent calls must also short-circuit without
+    // re-calling `which`.
+    mockedExecFileSync.mockClear();
+    const again = await runReleaseGuard("./dist", "check");
+    expect(again.ok).toBe(false);
+    expect(mockedExecFileSync).not.toHaveBeenCalled();
+  });
+
+  it("rejects an explicit relative RunOptions.binaryPath with binary_missing", async () => {
+    const result = await runReleaseGuard("./dist", "check", {
+      binaryPath: "./rg",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("binary_missing");
+      expect(result.stderr.toLowerCase()).toContain("absolute");
+    }
+    expect(mockedSpawn).not.toHaveBeenCalled();
+  });
+
+  it("accepts an explicit absolute RunOptions.binaryPath", async () => {
+    mockedSpawn.mockReturnValue(
+      fakeChildProcess({ kind: "ok", stdout: FIXTURE_CLEAN }) as never,
+    );
+    await runReleaseGuard("./dist", "check", {
+      binaryPath: "/opt/custom/releaseguard",
+    });
+    const [binary] = mockedSpawn.mock.calls[0] ?? [];
+    expect(binary).toBe("/opt/custom/releaseguard");
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Env allowlist (security S1.2): don't leak ANTHROPIC_API_KEY (or any
+// other secret-shaped env var) to the child.
+// ───────────────────────────────────────────────────────────────────────────
+describe("runReleaseGuard — env allowlist", () => {
+  it("buildChildEnv copies only the allowlisted keys", () => {
+    const parent = {
+      PATH: "/usr/bin:/bin",
+      HOME: "/Users/tester",
+      LANG: "en_GB.UTF-8",
+      LC_ALL: "en_GB.UTF-8",
+      TMPDIR: "/tmp",
+      ANTHROPIC_API_KEY: "sk-leak",
+      GITHUB_TOKEN: "ghp-leak",
+      MY_SECRET: "nope",
+      AWS_ACCESS_KEY_ID: "nope",
+      DB_PASSWORD: "nope",
+      SOME_OTHER: "nope",
+    };
+    const child = buildChildEnv(parent);
+    expect(Object.keys(child).sort()).toEqual(
+      ["HOME", "LANG", "LC_ALL", "PATH", "TMPDIR"].sort(),
+    );
+    expect(child.PATH).toBe("/usr/bin:/bin");
+    expect(child.HOME).toBe("/Users/tester");
+  });
+
+  it("buildChildEnv skips unset allowlisted keys (no undefined values)", () => {
+    const parent = { PATH: "/bin" };
+    const child = buildChildEnv(parent);
+    expect(child.PATH).toBe("/bin");
+    expect("HOME" in child).toBe(false);
+    expect("LANG" in child).toBe(false);
+  });
+
+  it("spawn call receives an env option that excludes ANTHROPIC_API_KEY", async () => {
+    const saved = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "sk-test-should-not-leak";
+    try {
+      mockedSpawn.mockReturnValue(
+        fakeChildProcess({ kind: "ok", stdout: FIXTURE_CLEAN }) as never,
+      );
+      await runReleaseGuard("./dist", "check");
+      const call = mockedSpawn.mock.calls[0];
+      expect(call).toBeDefined();
+      const opts = call?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts).toBeDefined();
+      expect(opts?.env).toBeDefined();
+      const childEnv = opts?.env ?? {};
+      expect(childEnv.ANTHROPIC_API_KEY).toBeUndefined();
+      // Allowlist keys propagate if parent had them.
+      expect(childEnv.PATH).toBe(process.env.PATH);
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = saved;
+    }
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// In-flight child tracking (security S1.3): spawned children must not
+// survive the parent process. The module installs exit / SIGINT / SIGTERM
+// handlers that SIGKILL every entry in the in-flight set.
+// ───────────────────────────────────────────────────────────────────────────
+describe("runReleaseGuard — in-flight child tracking", () => {
+  it("adds the child to the in-flight set during execution and removes it on close", async () => {
+    let capturedChild: EventEmitter | null = null;
+    // Build a child where we can observe membership at two points: while
+    // stdout is buffered (pre-close) and after close fires.
+    const emitter = new EventEmitter() as EventEmitter & {
+      stdout: PassThrough;
+      stderr: PassThrough;
+      kill: (s?: string) => boolean;
+    };
+    emitter.stdout = new PassThrough();
+    emitter.stderr = new PassThrough();
+    emitter.kill = () => true;
+    capturedChild = emitter;
+
+    mockedSpawn.mockReturnValue(emitter as never);
+
+    const pending = runReleaseGuard("./dist", "check");
+    // Yield so the runner's handlers attach and the child is registered.
+    await new Promise((r) => queueMicrotask(() => r(null)));
+    expect(_getInFlightChildren().has(capturedChild!)).toBe(true);
+    expect(_getInFlightChildren().size).toBeGreaterThanOrEqual(1);
+
+    emitter.stdout.write(FIXTURE_CLEAN);
+    emitter.stdout.end();
+    emitter.stderr.end();
+    emitter.emit("close", 0);
+
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    // After settle, the child is purged from the set.
+    expect(_getInFlightChildren().has(capturedChild!)).toBe(false);
+  });
+
+  it("removes the child from the in-flight set on error", async () => {
+    const emitter = new EventEmitter() as EventEmitter & {
+      stdout: PassThrough;
+      stderr: PassThrough;
+      kill: (s?: string) => boolean;
+    };
+    emitter.stdout = new PassThrough();
+    emitter.stderr = new PassThrough();
+    emitter.kill = () => true;
+    mockedSpawn.mockReturnValue(emitter as never);
+    const pending = runReleaseGuard("./dist", "check");
+    await new Promise((r) => queueMicrotask(() => r(null)));
+    expect(_getInFlightChildren().has(emitter)).toBe(true);
+    const err = Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    emitter.emit("error", err);
+    await pending;
+    expect(_getInFlightChildren().has(emitter)).toBe(false);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Timeout path (coverage gap): the 30 s timeout branch was never exercised
+// by the existing suite. Use fake timers so the test completes instantly.
+// ───────────────────────────────────────────────────────────────────────────
+describe("runReleaseGuard — timeout branch", () => {
+  it("settles with execution_failed when the child never closes before timeoutMs", async () => {
+    vi.useFakeTimers();
+    try {
+      // Child that writes nothing and never closes — the runner must kill
+      // it via the timeout branch.
+      const emitter = new EventEmitter() as EventEmitter & {
+        stdout: PassThrough;
+        stderr: PassThrough;
+        kill: (s?: string) => boolean;
+        killed: boolean;
+      };
+      emitter.stdout = new PassThrough();
+      emitter.stderr = new PassThrough();
+      emitter.killed = false;
+      emitter.kill = (_signal?: string): boolean => {
+        emitter.killed = true;
+        return true;
+      };
+      mockedSpawn.mockReturnValue(emitter as never);
+      const pending = runReleaseGuard("./dist", "check", { timeoutMs: 50 });
+      // Advance past the timeout.
+      await vi.advanceTimersByTimeAsync(60);
+      const result = await pending;
+      expect(result.ok).toBe(false);
+      if (!result.ok && result.reason === "execution_failed") {
+        expect(result.exitCode).toBe(-1);
+        expect(result.stderr).toMatch(/timed out/i);
+      }
+      expect(emitter.killed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Stderr cap + sanitiser (security S1.4)
+// ───────────────────────────────────────────────────────────────────────────
+describe("runReleaseGuard — stderr cap", () => {
+  it("truncates accumulated stderr at MAX_STDERR_BYTES but lets the child finish", async () => {
+    // Emit a huge stderr (larger than the 4 KB cap) then close normally —
+    // unlike stdout overflow, stderr overflow is not fatal, just truncated.
+    const big = "e".repeat(10_000);
+    const emitter = new EventEmitter() as EventEmitter & {
+      stdout: PassThrough;
+      stderr: PassThrough;
+      kill: (s?: string) => boolean;
+    };
+    emitter.stdout = new PassThrough();
+    emitter.stderr = new PassThrough();
+    emitter.kill = () => true;
+    mockedSpawn.mockReturnValue(emitter as never);
+    queueMicrotask(() => {
+      emitter.stderr.write(big);
+      emitter.stderr.end();
+      emitter.stdout.end();
+      emitter.emit("close", 2);
+    });
+    const result = await runReleaseGuard("./nope", "check");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // Truncated below the raw 10 KB blob, measured in BYTES (the cap
+      // is a byte budget, not a char budget).
+      expect(Buffer.byteLength(result.stderr)).toBeLessThanOrEqual(4_096);
+      expect(result.stderr).toContain("e");
+    }
+  });
+
+  it("enforces the cap in BYTES, not chars, for multi-byte UTF-8 stderr", async () => {
+    // Regression: the earlier implementation accumulated in bytes but
+    // truncated by char count. A 10 000-char string of `ü` (2 bytes each)
+    // is 20 000 bytes; the cap must kick in at 4 096 bytes, not 4 096
+    // chars (which would leave ~8 KB accumulated past the byte budget).
+    const multi = "ü".repeat(10_000); // 'ü' × 10 000 = 20 000 UTF-8 bytes
+    const emitter = new EventEmitter() as EventEmitter & {
+      stdout: PassThrough;
+      stderr: PassThrough;
+      kill: (s?: string) => boolean;
+    };
+    emitter.stdout = new PassThrough();
+    emitter.stderr = new PassThrough();
+    emitter.kill = () => true;
+    mockedSpawn.mockReturnValue(emitter as never);
+    queueMicrotask(() => {
+      emitter.stderr.write(multi);
+      emitter.stderr.end();
+      emitter.stdout.end();
+      emitter.emit("close", 2);
+    });
+    const result = await runReleaseGuard("./nope", "check");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // The BYTE length — not the char length — must satisfy the cap.
+      expect(Buffer.byteLength(result.stderr)).toBeLessThanOrEqual(4_096);
+    }
+  });
+});
+
+describe("sanitiseStderr", () => {
+  it("replaces the user's home directory with ~", () => {
+    const home = process.env.HOME ?? "/home/tester";
+    const raw = `error at ${home}/project/foo.js`;
+    const clean = sanitiseStderr(raw);
+    expect(clean).not.toContain(home);
+    expect(clean).toContain("~/project/foo.js");
+  });
+
+  it("truncates so that slice + marker fit exactly within maxLen", () => {
+    // The JSDoc contract is "≤ maxLen". The previous implementation
+    // returned `maxLen + marker.length` — this regression-pins the fix.
+    const raw = "x".repeat(5_000);
+    const clean = sanitiseStderr(raw, 100);
+    expect(clean.length).toBe(100);
+    expect(clean).toMatch(/…\[truncated\]$/);
+  });
+
+  it("returned length is exactly maxLen for a long input", () => {
+    const raw = "a".repeat(10_000);
+    const clean = sanitiseStderr(raw, 256);
+    expect(clean.length).toBe(256);
+    expect(clean.endsWith("…[truncated]")).toBe(true);
+  });
+
+  it("leaves short strings unchanged (no truncation marker)", () => {
+    const clean = sanitiseStderr("short message", 100);
+    expect(clean).toBe("short message");
+    expect(clean).not.toMatch(/truncated/);
+  });
+
+  // ── $HOME substitution is path-boundary anchored ─────────────────────
+  // A naive `replace(home, "~")` would turn `/Users/alicejones/foo` into
+  // `~jones/foo` when the real home is `/Users/alice`. The anchor makes
+  // the match require a path-boundary character after the home prefix.
+  it("rewrites $HOME when followed by a path separator", async () => {
+    const { homedir } = await import("node:os");
+    const home = homedir();
+    const clean = sanitiseStderr(`error at ${home}/project/foo.js`);
+    expect(clean).toContain("~/project/foo.js");
+    expect(clean).not.toContain(home);
+  });
+
+  it("rewrites $HOME at end-of-string", async () => {
+    const { homedir } = await import("node:os");
+    const home = homedir();
+    const clean = sanitiseStderr(`cwd=${home}`);
+    expect(clean).toBe("cwd=~");
+  });
+
+  it("rewrites $HOME inside quotes", async () => {
+    const { homedir } = await import("node:os");
+    const home = homedir();
+    const clean = sanitiseStderr(`path="${home}"`);
+    expect(clean).toBe(`path="~"`);
+  });
+
+  it("leaves a homedir PREFIX inside a longer path untouched", async () => {
+    // Regression: `/Users/alice` as a prefix of `/Users/aliceTEST/foo`
+    // must NOT get rewritten. The next char (`T`) is not a path boundary,
+    // so the anchor should refuse the match.
+    const { homedir } = await import("node:os");
+    const home = homedir();
+    const raw = `error at ${home}TEST/foo.js`;
+    const clean = sanitiseStderr(raw);
+    // Input must survive verbatim: no substitution fired.
+    expect(clean).toBe(raw);
+    expect(clean).not.toContain("~TEST");
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Signal handler re-exit: attaching SIGINT/SIGTERM handlers suppresses
+// Node's default terminate-on-signal. The handlers must therefore call
+// process.exit(130|143) themselves after killing children; otherwise any
+// process importing this module — including src/server.ts — would stop
+// responding to Ctrl-C.
+// ───────────────────────────────────────────────────────────────────────────
+describe("runReleaseGuard — signal handlers re-exit", () => {
+  it("SIGINT handler calls process.exit(130) after killing children", async () => {
+    // The handlers are installed lazily on first runReleaseGuard() call, so
+    // trigger the install by issuing a normal run first.
+    mockedSpawn.mockReturnValue(
+      fakeChildProcess({ kind: "ok", stdout: FIXTURE_CLEAN }) as never,
+    );
+    await runReleaseGuard("./dist", "check");
+
+    const exitSpy = vi
+      .spyOn(process, "exit")
+      .mockImplementation(() => undefined as never);
+    try {
+      // Emit SIGINT synthetically — the installed listener will fire.
+      process.emit("SIGINT", "SIGINT");
+      expect(exitSpy).toHaveBeenCalledWith(130);
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
+
+  it("SIGTERM handler calls process.exit(143) after killing children", async () => {
+    mockedSpawn.mockReturnValue(
+      fakeChildProcess({ kind: "ok", stdout: FIXTURE_CLEAN }) as never,
+    );
+    await runReleaseGuard("./dist", "check");
+
+    const exitSpy = vi
+      .spyOn(process, "exit")
+      .mockImplementation(() => undefined as never);
+    try {
+      process.emit("SIGTERM", "SIGTERM");
+      expect(exitSpy).toHaveBeenCalledWith(143);
+    } finally {
+      exitSpy.mockRestore();
     }
   });
 });
