@@ -38,6 +38,73 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_REDIRECTS = 3;
 
 // ───────────────────────────────────────────────────────────────────────────
+// IPv6 canonicalization — expand to 8 numeric groups before classifying.
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Expand any syntactically valid IPv6 address into 8 numeric 16-bit groups.
+ *
+ * Handles: `::`, zero compression anywhere (`0::1`, `0:0::1`, `::0:1`…),
+ * fully-expanded `0000:0000:0000:0000:0000:0000:0000:0001`, bracketed
+ * literals `[::1]`, embedded IPv4 (`::ffff:127.0.0.1`), and zone ids
+ * (`fe80::1%eth0`). Returns null for anything unparseable.
+ */
+export function expandIPv6(addrIn: string): number[] | null {
+  let addr = addrIn;
+  // Strip zone id (e.g. fe80::1%eth0) — not relevant to classification.
+  const pct = addr.indexOf("%");
+  if (pct >= 0) addr = addr.slice(0, pct);
+  // Strip surrounding brackets if caller passed a URL-host literal.
+  if (addr.startsWith("[") && addr.endsWith("]")) addr = addr.slice(1, -1);
+  // Handle embedded IPv4 tail (::ffff:127.0.0.1 form).
+  const v4Match = addr.match(/^(.*:)(\d+\.\d+\.\d+\.\d+)$/);
+  if (v4Match && v4Match[1] !== undefined && v4Match[2] !== undefined) {
+    const parts = v4Match[2].split(".").map((n) => Number(n));
+    if (
+      parts.length !== 4 ||
+      parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)
+    ) {
+      return null;
+    }
+    const hi = ((parts[0] ?? 0) << 8) | (parts[1] ?? 0);
+    const lo = ((parts[2] ?? 0) << 8) | (parts[3] ?? 0);
+    addr = v4Match[1] + hi.toString(16) + ":" + lo.toString(16);
+  }
+  // At most one "::" may appear.
+  const dcCount = (addr.match(/::/g) ?? []).length;
+  if (dcCount > 1) return null;
+  let headStr: string;
+  let tailStr: string | undefined;
+  if (dcCount === 1) {
+    const [h, t] = addr.split("::");
+    headStr = h ?? "";
+    tailStr = t ?? "";
+  } else {
+    headStr = addr;
+    tailStr = undefined;
+  }
+  const headGroups = headStr === "" ? [] : headStr.split(":");
+  const tailGroups =
+    tailStr === undefined ? [] : tailStr === "" ? [] : tailStr.split(":");
+  if (tailStr === undefined && headGroups.length !== 8) return null;
+  const fillCount = 8 - headGroups.length - tailGroups.length;
+  if (fillCount < 0) return null;
+  if (tailStr !== undefined && fillCount < 1) return null;
+  const rawGroups = [
+    ...headGroups,
+    ...Array(fillCount).fill("0"),
+    ...tailGroups,
+  ];
+  if (rawGroups.length !== 8) return null;
+  const groups: number[] = [];
+  for (const g of rawGroups) {
+    if (!/^[0-9a-fA-F]{1,4}$/.test(g)) return null;
+    groups.push(parseInt(g, 16));
+  }
+  return groups;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // IP classification
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -75,32 +142,35 @@ function isBlockedIPv4(addr: string): boolean {
   return false;
 }
 
-function normaliseIPv6(addr: string): string {
-  // Strip any zone id (e.g. fe80::1%eth0) and lowercase for prefix matching.
-  const noZone = addr.split("%")[0] ?? addr;
-  return noZone.toLowerCase();
-}
-
 function isBlockedIPv6(addr: string): boolean {
-  const norm = normaliseIPv6(addr);
-  // Loopback ::1 (in any equivalent form).
-  if (norm === "::1" || norm === "0:0:0:0:0:0:0:1") return true;
-  // Unspecified ::
-  if (norm === "::" || norm === "0:0:0:0:0:0:0:0") return true;
-  // fc00::/7 — unique local addresses (fc00::..fdff::)
-  if (/^f[cd][0-9a-f]{0,2}:/i.test(norm)) return true;
-  // fe80::/10 — link-local (fe80..febf)
-  if (/^fe[89ab][0-9a-f]{0,1}:/i.test(norm)) return true;
-  // IPv4-mapped IPv6 ::ffff:a.b.c.d or ::ffff:xxxx:yyyy
-  const mapped4 = norm.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-  if (mapped4 && mapped4[1]) {
-    return isBlockedIPv4(mapped4[1]);
+  const groups = expandIPv6(addr);
+  // Unparseable — refuse to reason about it; let downstream URL / connect
+  // surface a clearer error rather than blocking spuriously here.
+  if (!groups) return false;
+  const g0 = groups[0] ?? 0;
+  // Loopback ::1 — first 7 groups zero, last group 1. Using numeric groups
+  // catches every equivalent form (::1, 0:0::1, fully-expanded 0000:...:0001,
+  // bracketed [::1], etc.).
+  if (
+    groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 &&
+    groups[4] === 0 && groups[5] === 0 && groups[6] === 0 && groups[7] === 1
+  ) {
+    return true;
   }
-  const mappedHex = norm.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-  if (mappedHex && mappedHex[1] && mappedHex[2]) {
-    const hi = parseInt(mappedHex[1], 16);
-    const lo = parseInt(mappedHex[2], 16);
-    const dotted = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+  // Unspecified :: — all zero.
+  if (groups.every((g) => g === 0)) return true;
+  // fc00::/7 — ULA. First 7 bits of the high group are 1111110.
+  if ((g0 & 0xfe00) === 0xfc00) return true;
+  // fe80::/10 — link-local. First 10 bits are 1111111010.
+  if ((g0 & 0xffc0) === 0xfe80) return true;
+  // ::ffff:a.b.c.d — IPv4-mapped IPv6. First 5 groups zero, sixth = 0xffff.
+  if (
+    groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 &&
+    groups[4] === 0 && groups[5] === 0xffff
+  ) {
+    const g6 = groups[6] ?? 0;
+    const g7 = groups[7] ?? 0;
+    const dotted = `${(g6 >> 8) & 0xff}.${g6 & 0xff}.${(g7 >> 8) & 0xff}.${g7 & 0xff}`;
     return isBlockedIPv4(dotted);
   }
   return false;
