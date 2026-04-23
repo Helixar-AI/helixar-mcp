@@ -1,5 +1,55 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// DNS mock — shared across the whole file. inspectMcp's URL branch now
+// calls guardedFetch → node:dns/promises#lookup. Every test that hits the
+// network path installs its own mockLookup.mockResolvedValueOnce(...).
+const mockLookup = vi.fn();
+vi.mock("node:dns/promises", () => ({
+  lookup: (...args: unknown[]) => mockLookup(...args),
+}));
+
 import { inspectMcp } from "../../src/tools/inspect-mcp.js";
+
+// Preserve + restore ANTHROPIC_API_KEY around every test so suites that
+// delete it (e.g. the "[fallback]" case) can't leak into sibling files.
+let originalAnthropicKey: string | undefined;
+beforeEach(() => {
+  originalAnthropicKey = process.env.ANTHROPIC_API_KEY;
+  mockLookup.mockReset();
+  vi.unstubAllGlobals();
+});
+afterEach(() => {
+  if (originalAnthropicKey === undefined) {
+    delete process.env.ANTHROPIC_API_KEY;
+  } else {
+    process.env.ANTHROPIC_API_KEY = originalAnthropicKey;
+  }
+  vi.unstubAllGlobals();
+});
+
+function makeResponse(
+  status: number,
+  body: string,
+  headers: Record<string, string> = {},
+): Response {
+  const chunks = [new TextEncoder().encode(body)];
+  const bodyStream = {
+    async *[Symbol.asyncIterator]() {
+      for (const c of chunks) yield c;
+    },
+  };
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    headers: {
+      get(name: string) {
+        const key = Object.keys(headers).find((k) => k.toLowerCase() === name.toLowerCase());
+        return key ? headers[key] ?? null : null;
+      },
+    },
+    body: bodyStream,
+  } as unknown as Response;
+}
 
 const cleanManifest = {
   name: "well-behaved",
@@ -115,6 +165,110 @@ describe("inspectMcp — quick mode", () => {
     const out = await inspectMcp({ target: JSON.stringify(unsafeManifest), mode: "quick" });
     expect(typeof out.summary).toBe("string");
     expect(out.summary?.startsWith("[fallback]")).toBe(true);
+  });
+});
+
+describe("inspectMcp — URL branch (guardedFetch integration)", () => {
+  it("loads a manifest over HTTPS and returns NONE for a clean fixture", async () => {
+    mockLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => makeResponse(200, JSON.stringify(cleanManifest))),
+    );
+    const out = await inspectMcp({ target: "https://example.com/m.json", mode: "quick" });
+    expect(out).not.toMatchObject({ error: expect.anything() });
+    if ("risk_level" in out) {
+      expect(out.risk_level).toBe("NONE");
+    }
+  });
+
+  it("returns invalid_target when fetch rejects (network error)", async () => {
+    mockLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("ECONNREFUSED");
+      }),
+    );
+    const out = await inspectMcp({ target: "https://example.com/m.json", mode: "quick" });
+    expect(out).toMatchObject({ error: "invalid_target" });
+    if ("message" in out) {
+      expect(out.message).toMatch(/fetch failed|ECONNREFUSED/);
+    }
+  });
+
+  it("returns invalid_target with the status code on a 5xx response", async () => {
+    mockLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => makeResponse(503, "")),
+    );
+    const out = await inspectMcp({ target: "https://example.com/m.json", mode: "quick" });
+    expect(out).toMatchObject({ error: "invalid_target" });
+    if ("message" in out) {
+      expect(out.message).toMatch(/fetch returned 503/);
+    }
+  });
+
+  it("blocks private-IP targets before fetch is called", async () => {
+    // DNS resolves the public-looking host to a loopback address.
+    mockLookup.mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+    const fetchMock = vi.fn(async () => makeResponse(200, ""));
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await inspectMcp({ target: "https://example.com/m.json", mode: "quick" });
+    expect(out).toMatchObject({ error: "invalid_target" });
+    if ("message" in out) {
+      expect(out.message).toMatch(/blocked|private/i);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects plain-http URLs before any network/DNS call", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await inspectMcp({ target: "http://example.com/m.json", mode: "quick" });
+    expect(out).toMatchObject({ error: "invalid_target" });
+    if ("message" in out) {
+      expect(out.message).toMatch(/insecure_scheme/i);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockLookup).not.toHaveBeenCalled();
+  });
+});
+
+describe("inspectMcp — manifest depth + size caps", () => {
+  it("rejects a JSON string whose nesting exceeds the depth cap", async () => {
+    // Build an array nested 60 levels deep: [[[[...]]]]
+    let s = "0";
+    for (let i = 0; i < 60; i++) s = `[${s}]`;
+    const out = await inspectMcp({ target: s });
+    expect(out).toMatchObject({ error: "invalid_target" });
+    if ("message" in out) {
+      expect(out.message).toMatch(/nesting|depth/i);
+    }
+  });
+
+  it("accepts a JSON string at or below the depth cap (sanity)", async () => {
+    // 10 levels deep — well under the cap. Won't validate against the
+    // manifest schema, so we expect a schema error, NOT a depth error.
+    let s = "0";
+    for (let i = 0; i < 10; i++) s = `[${s}]`;
+    const out = await inspectMcp({ target: s });
+    expect(out).toMatchObject({ error: "invalid_target" });
+    if ("message" in out) {
+      expect(out.message).not.toMatch(/nesting|depth/i);
+    }
+  });
+
+  it("rejects a JSON string larger than the size cap", async () => {
+    // 2 MB payload (> 1 MB cap). Valid JSON, arbitrary structure.
+    const big = "x".repeat(2 * 1024 * 1024);
+    const target = JSON.stringify({ filler: big });
+    const out = await inspectMcp({ target });
+    expect(out).toMatchObject({ error: "invalid_target" });
+    if ("message" in out) {
+      expect(out.message).toMatch(/size|bytes/i);
+    }
   });
 });
 
