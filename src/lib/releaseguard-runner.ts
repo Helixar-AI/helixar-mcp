@@ -8,8 +8,30 @@
 //
 // The JSON shape below mirrors `internal/model/result.go` and
 // `internal/model/finding.go` in the ReleaseGuard repo.
+//
+// ── Hardening (security review S1) ─────────────────────────────────────
+//   • Binary path is resolved ONCE at first use to an absolute path via
+//     `HELIXAR_RELEASEGUARD_BIN` (if absolute) or `which releaseguard`.
+//     A relative path — whether from env or RunOptions.binaryPath — is
+//     rejected: it would re-open the $PATH-hijack attack surface that the
+//     whole resolution step exists to close.
+//   • spawn() receives an explicit allowlisted `env` so secret-shaped
+//     parent env vars (ANTHROPIC_API_KEY, *_TOKEN, *_SECRET, …) cannot
+//     leak into the child.
+//   • All in-flight children are tracked in a module-level Set and
+//     SIGKILL'd on parent `exit` / `SIGINT` / `SIGTERM` so a crashing
+//     server never leaves a runaway `releaseguard` behind.
+//   • Stderr accumulation is capped at MAX_STDERR_BYTES (truncate only,
+//     no kill — stderr overflow is non-fatal) and passed through
+//     `sanitiseStderr()` by the tool layer before reaching Claude.
 
-import { spawn } from "node:child_process";
+import {
+  spawn,
+  execFileSync,
+  type ChildProcess,
+} from "node:child_process";
+import { homedir } from "node:os";
+import { isAbsolute } from "node:path";
 
 export type ReleaseGuardCommand = "check" | "fix" | "harden" | "sbom";
 
@@ -56,7 +78,12 @@ export interface ReleaseGuardScanResult {
 }
 
 export interface RunOptions {
-  /** Path to the `releaseguard` binary. Defaults to looking it up on PATH. */
+  /**
+   * Path to the `releaseguard` binary. Must be absolute when provided —
+   * relative paths are rejected with `binary_missing` rather than silently
+   * re-introducing the $PATH-hijack surface. When omitted, the module
+   * uses its cached resolved path (see `getResolvedBinaryPath`).
+   */
   binaryPath?: string;
   /** Override config file (--config). */
   config?: string;
@@ -103,6 +130,145 @@ const DEFAULT_TIMEOUT_MS = 30_000;
  */
 export const MAX_STDOUT_BYTES = 10_000_000;
 
+/**
+ * Cap on accumulated stderr bytes. Much tighter than stdout — stderr is
+ * only ever user-facing diagnostic text. We truncate rather than kill the
+ * child because a chatty CLI should still be allowed to finish.
+ */
+export const MAX_STDERR_BYTES = 4_096;
+
+// ───────────────────────────────────────────────────────────────────────────
+// Child-env allowlist
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Env vars we're willing to forward to the CLI child. Anything outside
+ * this list — in particular ANTHROPIC_API_KEY, GITHUB_TOKEN, and any
+ * *_TOKEN / *_SECRET / *_KEY / *_PASSWORD — is stripped. We deliberately
+ * keep this list short: the CLI only needs locale + TMPDIR + a PATH good
+ * enough to exec subprocesses of its own.
+ */
+const CHILD_ENV_ALLOWLIST = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"] as const;
+
+export function buildChildEnv(
+  parent: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const child: NodeJS.ProcessEnv = {};
+  for (const key of CHILD_ENV_ALLOWLIST) {
+    const value = parent[key];
+    if (typeof value === "string") child[key] = value;
+  }
+  return child;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Binary path resolution (cached)
+// ───────────────────────────────────────────────────────────────────────────
+
+let resolvedBinaryPath: string | null | undefined;
+
+/**
+ * Resolve and cache the absolute path to the `releaseguard` binary.
+ * Precedence:
+ *   1. `HELIXAR_RELEASEGUARD_BIN` env var if set and absolute.
+ *   2. `which releaseguard` output.
+ *   3. `null` — subsequent calls short-circuit with `binary_missing`.
+ */
+function resolveBinaryPath(): string | null {
+  if (resolvedBinaryPath !== undefined) return resolvedBinaryPath;
+
+  const fromEnv = process.env.HELIXAR_RELEASEGUARD_BIN;
+  if (typeof fromEnv === "string" && fromEnv.length > 0 && isAbsolute(fromEnv)) {
+    resolvedBinaryPath = fromEnv;
+    return resolvedBinaryPath;
+  }
+
+  try {
+    const out = execFileSync("which", ["releaseguard"]);
+    const trimmed = out.toString("utf8").trim();
+    if (trimmed.length > 0 && isAbsolute(trimmed)) {
+      resolvedBinaryPath = trimmed;
+      return resolvedBinaryPath;
+    }
+  } catch {
+    // fall through to cache null
+  }
+
+  resolvedBinaryPath = null;
+  return resolvedBinaryPath;
+}
+
+/** For diagnostics and tests — returns the cached resolved path (or null). */
+export function getResolvedBinaryPath(): string | null {
+  return resolveBinaryPath();
+}
+
+/**
+ * Test seam — reset the cache so the next `resolveBinaryPath()` call
+ * re-runs the precedence ladder. Not for production use.
+ */
+export function _resetResolvedBinaryPath(): void {
+  resolvedBinaryPath = undefined;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// In-flight child tracking + parent-exit cleanup
+// ───────────────────────────────────────────────────────────────────────────
+
+const inFlightChildren = new Set<ChildProcess>();
+let exitHandlersInstalled = false;
+
+/** Test seam — observe the live set. Not for production use. */
+export function _getInFlightChildren(): Set<ChildProcess> {
+  return inFlightChildren;
+}
+
+function installExitHandlersOnce(): void {
+  if (exitHandlersInstalled) return;
+  exitHandlersInstalled = true;
+  const killAll = (): void => {
+    for (const child of inFlightChildren) {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // ignore — best-effort cleanup
+      }
+    }
+  };
+  process.on("exit", killAll);
+  process.on("SIGINT", killAll);
+  process.on("SIGTERM", killAll);
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Stderr sanitiser
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Scrub + cap a stderr blob before it crosses the MCP boundary:
+ *  - Replace `os.homedir()` globally with `~` so filesystem layout
+ *    (usernames, project paths) doesn't leak to the caller / Claude.
+ *  - Truncate to `maxLen` characters with a `…[truncated]` marker.
+ */
+export function sanitiseStderr(s: string, maxLen = 2_000): string {
+  const home = homedir();
+  let cleaned = s;
+  if (home.length > 0) {
+    // Escape regex metacharacters in home (the user's username might
+    // contain `.` on some distros, though it's rare).
+    const escaped = home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    cleaned = cleaned.replace(new RegExp(escaped, "g"), "~");
+  }
+  if (cleaned.length > maxLen) {
+    cleaned = cleaned.slice(0, maxLen) + "…[truncated]";
+  }
+  return cleaned;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Argv composition
+// ───────────────────────────────────────────────────────────────────────────
+
 function composeArgs(
   command: ReleaseGuardCommand,
   target: string,
@@ -132,19 +298,49 @@ function tryParseScanResult(stdout: string): ReleaseGuardScanResult | null {
   }
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Main entry
+// ───────────────────────────────────────────────────────────────────────────
+
 export async function runReleaseGuard(
   target: string,
   command: ReleaseGuardCommand,
   options: RunOptions = {},
 ): Promise<RunResult> {
-  const binary = options.binaryPath ?? "releaseguard";
+  // RunOptions.binaryPath wins but MUST be absolute — otherwise we'd
+  // reintroduce the $PATH-hijack surface the resolution step exists to
+  // close.
+  let binary: string;
+  if (options.binaryPath !== undefined) {
+    if (!isAbsolute(options.binaryPath)) {
+      return {
+        ok: false,
+        reason: "binary_missing",
+        stderr: "binaryPath must be absolute",
+      };
+    }
+    binary = options.binaryPath;
+  } else {
+    const resolved = resolveBinaryPath();
+    if (resolved === null) {
+      return {
+        ok: false,
+        reason: "binary_missing",
+        stderr: "releaseguard CLI not found on PATH",
+      };
+    }
+    binary = resolved;
+  }
+
   const args = composeArgs(command, target, options.config);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxStdoutBytes = options.maxStdoutBytes ?? MAX_STDOUT_BYTES;
 
-  let child;
+  installExitHandlersOnce();
+
+  let child: ChildProcess;
   try {
-    child = spawn(binary, args);
+    child = spawn(binary, args, { env: buildChildEnv(process.env) });
   } catch (err) {
     // Synchronous spawn failure is rare (usually ENOENT comes via 'error'
     // event), but guard anyway — we promised never to throw.
@@ -152,15 +348,19 @@ export async function runReleaseGuard(
     return { ok: false, reason: "binary_missing", stderr: msg };
   }
 
+  inFlightChildren.add(child);
+
   return await new Promise<RunResult>((resolve) => {
     let stdout = "";
     let stdoutBytes = 0;
     let stderr = "";
+    let stderrBytes = 0;
     let settled = false;
     const settle = (r: RunResult): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      inFlightChildren.delete(child);
       resolve(r);
     };
 
@@ -187,7 +387,20 @@ export async function runReleaseGuard(
       stdout += chunk.toString();
     });
     child.stderr?.on("data", (chunk: Buffer | string) => {
-      stderr += chunk.toString();
+      // Stderr overflow is non-fatal — just stop appending. We don't kill
+      // the child for a chatty CLI; it's allowed to finish.
+      if (stderrBytes >= MAX_STDERR_BYTES) return;
+      const str = chunk.toString();
+      const remaining = MAX_STDERR_BYTES - stderrBytes;
+      if (str.length > remaining) {
+        stderr += str.slice(0, remaining);
+        stderrBytes = MAX_STDERR_BYTES;
+      } else {
+        stderr += str;
+        stderrBytes += Buffer.isBuffer(chunk)
+          ? chunk.length
+          : Buffer.byteLength(chunk);
+      }
     });
 
     child.on("error", (err: NodeJS.ErrnoException) => {
