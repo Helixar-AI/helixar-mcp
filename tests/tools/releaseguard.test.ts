@@ -6,7 +6,9 @@ vi.mock("../../src/lib/releaseguard-runner.js", () => ({
 }));
 
 const { runReleaseGuard } = await import("../../src/lib/releaseguard-runner.js");
-const { releaseguard } = await import("../../src/tools/releaseguard.js");
+const { releaseguard, buildPrompt } = await import(
+  "../../src/tools/releaseguard.js"
+);
 
 const mockedRun = vi.mocked(runReleaseGuard);
 
@@ -272,5 +274,65 @@ describe("releaseguard — input validation", () => {
     const out = await releaseguard({ target: "", mode: "quick" });
     expect(out).toMatchObject({ error: "invalid_target" });
     expect(mockedRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("releaseguard — buildPrompt format branching", () => {
+  const sampleFindings = [
+    {
+      rule_id: "SEC-001",
+      severity: "critical",
+      category: "secret",
+      path: "dist/bundle.js",
+      line: 1337,
+      message: "AWS access key embedded in bundle.",
+    },
+  ];
+
+  it("brief format instructs the model to keep output ≤250 chars", () => {
+    const prompt = buildPrompt({
+      target: "./dist",
+      command: "check",
+      findings: sampleFindings,
+      riskLevel: "HIGH",
+      policyResult: "fail",
+      format: "brief",
+    });
+    // Must mention the 250-char budget so the model keeps it short.
+    expect(prompt).toMatch(/250/);
+    expect(prompt.toLowerCase()).toMatch(/headline|one sentence|single sentence|brief/);
+  });
+
+  it("executive format instructs the model to avoid jargon tokens", () => {
+    const prompt = buildPrompt({
+      target: "./dist",
+      command: "check",
+      findings: sampleFindings,
+      riskLevel: "HIGH",
+      policyResult: "fail",
+      format: "executive",
+    });
+    // The executive variant must explicitly warn off rule-ID / CLI / hash jargon.
+    expect(prompt).toMatch(/\[CVE/);
+    expect(prompt).toMatch(/--fail-on/);
+    expect(prompt).toMatch(/SHA/);
+    // ...and should steer toward business-level risk language.
+    expect(prompt.toLowerCase()).toMatch(/business|risk|non-technical|audience/);
+  });
+
+  it("technical format (default) still embeds rule IDs and paths", () => {
+    const prompt = buildPrompt({
+      target: "./dist",
+      command: "check",
+      findings: sampleFindings,
+      riskLevel: "HIGH",
+      policyResult: "fail",
+      format: "technical",
+    });
+    // Rule ID must appear verbatim so the reader can grep it.
+    expect(prompt).toContain("SEC-001");
+    expect(prompt).toContain("dist/bundle.js");
+    // And the technical prompt should NOT carry the executive "avoid jargon" block.
+    expect(prompt).not.toMatch(/avoid.*jargon/i);
   });
 });

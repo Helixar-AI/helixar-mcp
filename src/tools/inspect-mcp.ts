@@ -7,6 +7,11 @@
 import { z } from "zod";
 import { narrate } from "../lib/narrate.js";
 import {
+  bucketRiskLevel,
+  scoreFindings,
+  type RiskLevel,
+} from "../lib/risk-score.js";
+import {
   applyRules,
   MCPManifestSchema,
   SENTINEL_DEEP_RULES,
@@ -14,7 +19,6 @@ import {
   type MCPManifest,
   type RuleFinding,
   type SentinelRule,
-  type Severity,
 } from "../lib/sentinel-rules.js";
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -30,7 +34,7 @@ export const InspectMcpInputSchema = z.object({
 
 export type InspectMcpInput = z.infer<typeof InspectMcpInputSchema>;
 
-export type RiskLevel = "NONE" | "LOW" | "MED" | "HIGH" | "CRIT";
+export type { RiskLevel };
 
 export interface InspectMcpSuccess {
   risk_score: number;
@@ -47,30 +51,6 @@ export interface InspectMcpError {
 }
 
 export type InspectMcpOutput = InspectMcpSuccess | InspectMcpError;
-
-// ───────────────────────────────────────────────────────────────────────────
-// Severity → score weights
-// ───────────────────────────────────────────────────────────────────────────
-
-const SEVERITY_WEIGHTS: Record<Severity, number> = {
-  critical: 40,
-  high: 20,
-  medium: 10,
-  low: 5,
-};
-
-function bucketRiskLevel(score: number): RiskLevel {
-  if (score === 0) return "NONE";
-  if (score < 20) return "LOW";
-  if (score < 50) return "MED";
-  if (score < 80) return "HIGH";
-  return "CRIT";
-}
-
-function scoreFindings(findings: RuleFinding[]): number {
-  const raw = findings.reduce((sum, f) => sum + (SEVERITY_WEIGHTS[f.severity] ?? 0), 0);
-  return Math.min(100, raw);
-}
 
 // ───────────────────────────────────────────────────────────────────────────
 // Manifest parser — accepts a URL or a raw JSON string

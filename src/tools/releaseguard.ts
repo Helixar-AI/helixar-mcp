@@ -15,6 +15,11 @@
 import { z } from "zod";
 import { narrate } from "../lib/narrate.js";
 import {
+  bucketRiskLevel,
+  scoreFindings,
+  type RiskLevel,
+} from "../lib/risk-score.js";
+import {
   runReleaseGuard,
   type ReleaseGuardCommand,
   type ReleaseGuardFinding,
@@ -39,7 +44,7 @@ export const ReleaseGuardInputSchema = z.object({
 
 export type ReleaseGuardInput = z.infer<typeof ReleaseGuardInputSchema>;
 
-export type RiskLevel = "NONE" | "LOW" | "MED" | "HIGH" | "CRIT";
+export type { RiskLevel };
 
 export interface ReleaseGuardToolFinding {
   rule_id: string;
@@ -76,34 +81,6 @@ export interface ReleaseGuardError {
 
 export type ReleaseGuardOutput = ReleaseGuardSuccess | ReleaseGuardError;
 
-// ───────────────────────────────────────────────────────────────────────────
-// Severity weights — identical to helixar_inspect_mcp. Info = 0.
-// ───────────────────────────────────────────────────────────────────────────
-
-const SEVERITY_WEIGHTS: Record<string, number> = {
-  critical: 40,
-  high: 20,
-  medium: 10,
-  low: 5,
-  info: 0,
-};
-
-function bucketRiskLevel(score: number): RiskLevel {
-  if (score === 0) return "NONE";
-  if (score < 20) return "LOW";
-  if (score < 50) return "MED";
-  if (score < 80) return "HIGH";
-  return "CRIT";
-}
-
-function scoreFindings(findings: ReleaseGuardToolFinding[]): number {
-  const raw = findings.reduce(
-    (sum, f) => sum + (SEVERITY_WEIGHTS[f.severity.toLowerCase()] ?? 0),
-    0,
-  );
-  return Math.min(100, raw);
-}
-
 function normaliseFinding(f: ReleaseGuardFinding): ReleaseGuardToolFinding {
   return {
     rule_id: f.rule_id ?? f.id,
@@ -119,31 +96,104 @@ function normaliseFinding(f: ReleaseGuardFinding): ReleaseGuardToolFinding {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Narrative prompt
+// Narrative prompt — branches on `format` so downstream audiences get a
+// brief tuned to them (review S6). Exported so the tool's tests can assert
+// on the prompt string directly without having to mock narrate().
 // ───────────────────────────────────────────────────────────────────────────
 
-function buildPrompt(
+export type PromptFormat = "executive" | "technical" | "brief";
+
+export interface BuildPromptArgs {
+  target: string;
+  command: ReleaseGuardCommand;
+  findings: ReleaseGuardToolFinding[];
+  riskLevel: RiskLevel;
+  policyResult?: string;
+  format: PromptFormat;
+}
+
+export function buildPrompt(args: BuildPromptArgs): string {
+  const { target, command, findings, riskLevel, policyResult, format } = args;
+  const policyLine = policyResult ? `  |  Policy: ${policyResult}` : "";
+
+  switch (format) {
+    case "brief":
+      return buildBriefPrompt(target, command, findings, riskLevel, policyLine);
+    case "executive":
+      return buildExecutivePrompt(target, command, findings, riskLevel, policyLine);
+    case "technical":
+    default:
+      return buildTechnicalPrompt(target, command, findings, riskLevel, policyLine);
+  }
+}
+
+function formatFindingsTechnical(findings: ReleaseGuardToolFinding[]): string {
+  return findings.length === 0
+    ? "no findings"
+    : findings
+        .map((f) => `${f.rule_id} [${f.severity}] ${f.path ?? ""} ${f.message}`)
+        .join("\n");
+}
+
+function formatFindingsExecutive(findings: ReleaseGuardToolFinding[]): string {
+  // No rule IDs, no paths — just severity + plain-English message.
+  return findings.length === 0
+    ? "no findings"
+    : findings.map((f) => `- [${f.severity}] ${f.message}`).join("\n");
+}
+
+function buildTechnicalPrompt(
   target: string,
   command: ReleaseGuardCommand,
   findings: ReleaseGuardToolFinding[],
   riskLevel: RiskLevel,
-  policyResult?: string,
+  policyLine: string,
 ): string {
-  const findingsText =
-    findings.length === 0
-      ? "no findings"
-      : findings
-          .map((f) => `${f.rule_id} [${f.severity}] ${f.path ?? ""} ${f.message}`)
-          .join("\n");
   return [
     "You are a release-engineering reviewer writing a 3-4 sentence brief on an artifact scan.",
-    "Stay factual; reference rule IDs when they materially aid the reader.",
+    "Stay factual; reference rule IDs, paths, and line numbers when they materially aid the reader.",
     `Target: ${target}`,
     `Command: releaseguard ${command}`,
-    `Risk level: ${riskLevel}` +
-      (policyResult ? `  |  Policy: ${policyResult}` : ""),
-    `Findings:\n${findingsText}`,
+    `Risk level: ${riskLevel}${policyLine}`,
+    `Findings:\n${formatFindingsTechnical(findings)}`,
     "Write the brief now.",
+  ].join("\n\n");
+}
+
+function buildExecutivePrompt(
+  target: string,
+  command: ReleaseGuardCommand,
+  findings: ReleaseGuardToolFinding[],
+  riskLevel: RiskLevel,
+  policyLine: string,
+): string {
+  return [
+    "You are briefing a non-technical executive on a release-readiness scan.",
+    "Write 2-3 sentences in plain business language that explain the level of risk this release carries and what the recommended next step is.",
+    "The audience is non-technical — avoid jargon such as rule-ID tags like `[CVE-…]` or `[SEC-001]`, CLI flags like `--fail-on`, commit hashes or `SHA`s, and file paths or line numbers. Talk about business impact (customer trust, revenue risk, compliance exposure) rather than implementation detail.",
+    `Target: ${target}`,
+    `Command: releaseguard ${command}`,
+    `Risk level: ${riskLevel}${policyLine}`,
+    `Findings:\n${formatFindingsExecutive(findings)}`,
+    "Write the executive brief now.",
+  ].join("\n\n");
+}
+
+function buildBriefPrompt(
+  target: string,
+  command: ReleaseGuardCommand,
+  findings: ReleaseGuardToolFinding[],
+  riskLevel: RiskLevel,
+  policyLine: string,
+): string {
+  return [
+    "You are writing a single-sentence headline summary of a release-readiness scan.",
+    "Hard limit: 250 characters. Write one sentence, no more. Lead with the risk level and the single most important finding. Omit everything else.",
+    `Target: ${target}`,
+    `Command: releaseguard ${command}`,
+    `Risk level: ${riskLevel}${policyLine}`,
+    `Findings:\n${formatFindingsTechnical(findings)}`,
+    "Write the ≤250-char headline now.",
   ].join("\n\n");
 }
 
@@ -215,7 +265,14 @@ export async function releaseguard(
   const policyResult = extractPolicyResult(run.raw);
 
   const summary = await narrate(
-    buildPrompt(target, command, findings, riskLevel, policyResult),
+    buildPrompt({
+      target,
+      command,
+      findings,
+      riskLevel,
+      policyResult,
+      format: parsed.data.format,
+    }),
     { audience: parsed.data.format, maxTokens: 320 },
   );
 
