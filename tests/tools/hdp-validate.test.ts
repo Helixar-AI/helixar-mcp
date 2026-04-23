@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { hdpValidate } from "../../src/tools/hdp-validate.js";
 import type { DelegationChain } from "../../src/lib/hdp-schema.js";
 
@@ -138,8 +138,22 @@ describe("hdpValidate — per-hop summary", () => {
 });
 
 describe("hdpValidate — narrative", () => {
-  it("returns a narrative string (fallback prefix when no API key)", async () => {
+  let originalKey: string | undefined;
+
+  beforeEach(() => {
+    originalKey = process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
+  });
+
+  afterEach(() => {
+    if (originalKey === undefined) {
+      delete process.env.ANTHROPIC_API_KEY;
+    } else {
+      process.env.ANTHROPIC_API_KEY = originalKey;
+    }
+  });
+
+  it("returns a narrative string (fallback prefix when no API key)", async () => {
     const out = await hdpValidate({ chain: cleanChain });
     expect(typeof out.narrative).toBe("string");
     expect(out.narrative.startsWith("[fallback]")).toBe(true);
