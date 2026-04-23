@@ -9,6 +9,7 @@
 
 import { z } from "zod";
 import { narrate } from "../lib/narrate.js";
+import { UNTRUSTED_INSTRUCTION, untrustedBlock } from "../lib/prompt-guard.js";
 import {
   DelegationChainSchema,
   scopeEscalationDetected,
@@ -95,17 +96,25 @@ function summariseHops(chain: DelegationChain, violations: Violation[]): HopSumm
 // ───────────────────────────────────────────────────────────────────────────
 
 function buildNarrativePrompt(chain: DelegationChain, violations: Violation[]): string {
+  // root_principal, delegator, delegatee, and scope are all caller-supplied
+  // strings pulled from the chain payload — treat them as untrusted. The
+  // violation rule_id + severity come from our own rule engine, and `v.message`
+  // is set inside hdp-schema (also ours), so it's trusted. We still wrap the
+  // aggregate findings block because the hop-index could be interleaved with
+  // attacker-influenced content in future rule messages.
   const hopsText = chain.hops
     .map((h, i) => `  hop ${i}: ${h.delegator} → ${h.delegatee} [${h.scope.join(", ")}]`)
     .join("\n");
   const violationText = violations.length === 0
     ? "no violations"
     : violations.map((v) => `  ${v.rule_id} [${v.severity}] ${v.message}`).join("\n");
+  const rootPrincipal = chain.root_principal ?? "(missing)";
   return [
     "You are explaining an HDP delegation trust graph to a security operator in 3-4 plain-English sentences.",
-    `Root principal: ${chain.root_principal ?? "(missing)"}`,
-    `Hops:\n${hopsText || "  (empty chain)"}`,
-    `Findings:\n${violationText}`,
+    UNTRUSTED_INSTRUCTION,
+    `Root principal: ${untrustedBlock("root-principal", rootPrincipal)}`,
+    `Hops:\n${untrustedBlock("hops", hopsText || "  (empty chain)")}`,
+    `Findings:\n${untrustedBlock("violations", violationText)}`,
     "Reference the IETF draft only if it materially helps. Stay concrete; reference rule IDs only when they help the operator.",
     "Write the explanation now.",
   ].join("\n\n");
