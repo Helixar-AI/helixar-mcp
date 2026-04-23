@@ -32,10 +32,10 @@ Status: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked
 
 ## Phase 4-v2 — Tool 3 replacement: `helixar_releaseguard`
 
-- [ ] **7-v2.** `lib/releaseguard-runner.ts` — CLI adapter (shell out, normalise JSON output) — _M_
-- [ ] **8-v2.** `tools/releaseguard.ts` — quick/deep tiers, auth gate, `inspect_mcp`-shaped output — _M_
-- [ ] **8.5-v2.** Register `helixar_releaseguard` in `server.ts` — _S_
-- [ ] **Checkpoint D-v2:** Tool 3 (ReleaseGuard) shippable, tag `v0.5.0-tool3-releaseguard`
+- [x] **7-v2.** `lib/releaseguard-runner.ts` — CLI adapter (shell out, normalise JSON output) — _M_
+- [x] **8-v2.** `tools/releaseguard.ts` — quick/deep tiers, auth gate, `inspect_mcp`-shaped output — _M_
+- [x] **8.5-v2.** Register `helixar_releaseguard` in `server.ts` — _S_
+- [x] **Checkpoint D-v2:** Tool 3 (ReleaseGuard) shippable, tag `v0.5.0-tool3-releaseguard`
 
 ## Phase 5 — Tool 1 deep mode + auth gate
 

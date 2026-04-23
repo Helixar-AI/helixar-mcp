@@ -6,7 +6,7 @@ Agentic-AI security tools for Claude, exposed as a remote MCP server and listed 
 |---|---|
 | **`helixar_inspect_mcp`** | Scan an MCP server (URL or raw manifest JSON) against Sentinel detection rules. Returns risk score, findings, and a Claude-generated security brief. Quick mode is free + authless (top 8 rules). Deep mode runs all 26 rules with an API key. |
 | **`helixar_hdp_validate`** | Validate an HDP delegation chain against IETF draft `draft-helixar-hdp-agentic-delegation-00`. Surfaces scope escalations, depth violations, expired hops, missing signatures. Every output cites the IETF draft + Zenodo DOI. |
-| **`helixar_releaseguard`** _(planned)_ | Wraps [`Helixar-AI/ReleaseGuard`](https://github.com/Helixar-AI/ReleaseGuard). Quick mode scans `dist/` / release artifacts for secrets, metadata leaks, license gaps. Deep mode runs the full `harden` pipeline (fix + obfuscate + sign + attest). |
+| **`helixar_releaseguard`** | Wraps [`Helixar-AI/ReleaseGuard`](https://github.com/Helixar-AI/ReleaseGuard). Quick mode scans `dist/` / release artifacts for secrets, metadata leaks, license gaps. Deep mode runs the full `harden` pipeline (fix + obfuscate + sign + attest). Requires the `releaseguard` binary on `PATH`. |
 
 ## Quick start
 
@@ -41,22 +41,24 @@ For local development, point Claude Desktop at `node /path/to/helixar-mcp/dist/s
 
 | Mode | Auth | Tools / scope | Purpose |
 |---|---|---|---|
-| Quick / public | none | `inspect_mcp` (top-8 rules), `hdp_validate`, `releaseguard check` _(planned)_ | Maximum reach — zero-friction for community adoption |
-| Authenticated | API key (OAuth2) | `inspect_mcp` deep mode (26 rules), `releaseguard harden` _(planned)_ | Pilot customers + paid tier |
+| Quick / public | none | `inspect_mcp` (top-8 rules), `hdp_validate`, `releaseguard check` | Maximum reach — zero-friction for community adoption |
+| Authenticated | API key (OAuth2) | `inspect_mcp` deep mode (26 rules), `releaseguard fix/harden/sbom` | Pilot customers + paid tier |
 
 ## Repository layout
 
 ```
 src/
-├── server.ts              # MCP stdio entrypoint
-├── worker.ts              # Cloudflare Workers HTTP adapter (Phase 7)
+├── server.ts                 # MCP stdio entrypoint
+├── worker.ts                 # Cloudflare Workers HTTP adapter (Phase 7)
 ├── lib/
-│   ├── narrate.ts         # Anthropic call + deterministic fallback
-│   ├── sentinel-rules.ts  # 26 Sentinel detection rules (top-8 quick + 18 deep)
-│   └── hdp-schema.ts      # HDP chain types + 9 validation rules
+│   ├── narrate.ts            # Anthropic call + deterministic fallback
+│   ├── sentinel-rules.ts     # 26 Sentinel detection rules (top-8 quick + 18 deep)
+│   ├── hdp-schema.ts         # HDP chain types + 9 validation rules
+│   └── releaseguard-runner.ts # CLI adapter for the releaseguard binary
 └── tools/
-    ├── inspect-mcp.ts     # helixar_inspect_mcp implementation
-    └── hdp-validate.ts    # helixar_hdp_validate implementation
+    ├── inspect-mcp.ts        # helixar_inspect_mcp implementation
+    ├── hdp-validate.ts       # helixar_hdp_validate implementation
+    └── releaseguard.ts       # helixar_releaseguard implementation
 tests/
 └── (mirrors src/)
 ```

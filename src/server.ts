@@ -20,6 +20,10 @@ import {
   InspectMcpInputSchema,
   inspectMcp,
 } from "./tools/inspect-mcp.js";
+import {
+  ReleaseGuardInputSchema,
+  releaseguard,
+} from "./tools/releaseguard.js";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Tool descriptors
@@ -48,6 +52,15 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
       "output cites the IETF draft and Zenodo DOI.",
     inputSchema: zodToJsonSchema(HdpValidateInputSchema),
   },
+  {
+    name: "helixar_releaseguard",
+    description:
+      "Wrap the open-source Helixar-AI/ReleaseGuard artifact policy engine. Quick mode runs " +
+      "`releaseguard check` (secrets, metadata leaks, license gaps) — authless, report-only. " +
+      "Deep mode unlocks the full `fix`/`harden`/`sbom` command set behind an api_key. Output " +
+      "mirrors helixar_inspect_mcp: risk_score, risk_level, findings[], narrated summary.",
+    inputSchema: zodToJsonSchema(ReleaseGuardInputSchema),
+  },
 ];
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -66,6 +79,11 @@ export async function dispatchTool(
       >;
     case "helixar_hdp_validate":
       return (await hdpValidate(args as Parameters<typeof hdpValidate>[0])) as unknown as Record<
+        string,
+        unknown
+      >;
+    case "helixar_releaseguard":
+      return (await releaseguard(args as Parameters<typeof releaseguard>[0])) as unknown as Record<
         string,
         unknown
       >;
