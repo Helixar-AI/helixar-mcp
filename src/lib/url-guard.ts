@@ -7,6 +7,10 @@
 //   • DNS lookup with private-range rejection (loopback, RFC1918, link-local
 //     incl. 169.254.169.254 cloud metadata, IPv6 ULA/link-local/::1, and
 //     IPv4-mapped IPv6 for any blocked IPv4).
+//   • Bounded DNS lookup — the dns.lookup() call is raced against the request
+//     timeout so a slow resolver cannot stall the fetch indefinitely (the
+//     AbortController that guards the fetch itself isn't armed yet at this
+//     point, so without a race a hostile resolver could hold the call open).
 //   • DNS-rebinding protection — the IP returned by our validated lookup is
 //     pinned for the actual TCP connect via a per-request undici Agent with a
 //     custom `connect.lookup` hook. undici therefore never re-resolves the
@@ -193,17 +197,31 @@ interface SafeAddress {
 
 async function resolveAndValidate(
   hostname: string,
+  timeoutMs: number,
 ): Promise<{ ok: true; safe: SafeAddress } | { ok: false; reason: string }> {
   // Strip the surrounding brackets that URL parser keeps on IPv6 literals.
   const host = hostname.startsWith("[") && hostname.endsWith("]")
     ? hostname.slice(1, -1)
     : hostname;
+  // Race the lookup against the caller's timeout so a slow or adversarial
+  // resolver cannot stall guardedFetch indefinitely — the AbortController
+  // below is only armed AFTER this call returns.
+  let timer: ReturnType<typeof setTimeout> | undefined;
   let results: Array<{ address: string; family: number }>;
   try {
-    results = await lookup(host, { all: true });
+    const lookupPromise = lookup(host, { all: true });
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("dns_timeout")), timeoutMs);
+    });
+    results = await Promise.race([lookupPromise, timeoutPromise]);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    if (msg === "dns_timeout") {
+      return { ok: false, reason: `dns_timeout after ${timeoutMs}ms` };
+    }
     return { ok: false, reason: `dns_lookup_failed: ${msg}` };
+  } finally {
+    if (timer) clearTimeout(timer);
   }
   if (results.length === 0) {
     return { ok: false, reason: "dns_lookup_failed: no addresses" };
@@ -280,7 +298,7 @@ async function fetchWithGuard(
     return { ok: false, reason: `insecure_scheme: ${scheme}` };
   }
 
-  const resolved = await resolveAndValidate(parsed.hostname);
+  const resolved = await resolveAndValidate(parsed.hostname, timeoutMs);
   if (!resolved.ok) return resolved;
 
   const dispatcher = _createPinnedDispatcher(resolved.safe);
@@ -337,12 +355,13 @@ async function fetchWithGuard(
   try {
     const body = response.body as AsyncIterable<Uint8Array> | null | undefined;
     if (!body || typeof (body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] !== "function") {
-      // Fallback: read as text, but still enforce the cap post-hoc.
-      const text = await response.text();
-      if (Buffer.byteLength(text, "utf8") > maxBytes) {
-        return { ok: false, reason: "response_too_large" };
-      }
-      return { ok: true, text };
+      // Node 20+ always provides a streamable body on fetch Responses. A
+      // missing body here indicates either a mocked response (tests should
+      // always supply one) or a very unusual transport anomaly — reject
+      // rather than fall back to an unsigned response.text() which would
+      // bypass the size cap and the abort signal (a 100 MB body would be
+      // fully buffered before we could check the cap post-hoc).
+      return { ok: false, reason: "empty_body" };
     }
     const chunks: Uint8Array[] = [];
     let total = 0;
