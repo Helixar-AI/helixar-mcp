@@ -1,12 +1,12 @@
 # Helixar Security — Claude MCP Connector
 
-Three agentic-AI security tools, exposed as a remote MCP server, listed in the Claude Connectors Directory.
+Agentic-AI security tools for Claude, exposed as a remote MCP server and listed in the Claude Connectors Directory.
 
 | Tool | What it does |
 |---|---|
 | **`helixar_inspect_mcp`** | Scan an MCP server (URL or raw manifest JSON) against Sentinel detection rules. Returns risk score, findings, and a Claude-generated security brief. Quick mode is free + authless (top 8 rules). Deep mode runs all 26 rules with an API key. |
 | **`helixar_hdp_validate`** | Validate an HDP delegation chain against IETF draft `draft-helixar-hdp-agentic-delegation-00`. Surfaces scope escalations, depth violations, expired hops, missing signatures. Every output cites the IETF draft + Zenodo DOI. |
-| **`helixar_triage_alert`** | Triage a Vigil / ATP detection payload into a kill-chain stage (Preparation / Positioning / Expansion / Objective) with a Claude-generated narrative in your choice of executive, technical, or brief format. |
+| **`helixar_releaseguard`** | Wraps [`Helixar-AI/ReleaseGuard`](https://github.com/Helixar-AI/ReleaseGuard). Quick mode scans `dist/` / release artifacts for secrets, metadata leaks, license gaps. Deep mode runs the full `harden` pipeline (fix + obfuscate + sign + attest). Requires the `releaseguard` binary on `PATH`. |
 
 ## Quick start
 
@@ -41,31 +41,31 @@ For local development, point Claude Desktop at `node /path/to/helixar-mcp/dist/s
 
 | Mode | Auth | Tools / scope | Purpose |
 |---|---|---|---|
-| Quick / public | none | `inspect_mcp` (top-8 rules), `hdp_validate` | Maximum reach — zero-friction for community adoption |
-| Authenticated | API key (OAuth2) | `inspect_mcp` deep mode (26 rules), `triage_alert` | Pilot customers + paid tier |
+| Quick / public | none | `inspect_mcp` (top-8 rules), `hdp_validate`, `releaseguard check` | Maximum reach — zero-friction for community adoption |
+| Authenticated | API key (OAuth2) | `inspect_mcp` deep mode (26 rules), `releaseguard fix/harden/sbom` | Pilot customers + paid tier |
 
 ## Repository layout
 
 ```
 src/
-├── server.ts              # MCP stdio entrypoint
-├── worker.ts              # Cloudflare Workers HTTP adapter (Phase 7)
+├── server.ts                 # MCP stdio entrypoint
+├── worker.ts                 # Cloudflare Workers HTTP adapter (Phase 7)
 ├── lib/
-│   ├── narrate.ts         # Anthropic call + deterministic fallback
-│   ├── sentinel-rules.ts  # 26 Sentinel detection rules (top-8 quick + 18 deep)
-│   ├── hdp-schema.ts      # HDP chain types + 9 validation rules
-│   └── vigil-parser.ts    # Vigil/ATP payload normaliser + stage classifier
+│   ├── narrate.ts            # Anthropic call + deterministic fallback
+│   ├── sentinel-rules.ts     # 26 Sentinel detection rules (top-8 quick + 18 deep)
+│   ├── hdp-schema.ts         # HDP chain types + 9 validation rules
+│   └── releaseguard-runner.ts # CLI adapter for the releaseguard binary
 └── tools/
-    ├── inspect-mcp.ts     # helixar_inspect_mcp implementation
-    ├── hdp-validate.ts    # helixar_hdp_validate implementation
-    └── triage-alert.ts    # helixar_triage_alert implementation
+    ├── inspect-mcp.ts        # helixar_inspect_mcp implementation
+    ├── hdp-validate.ts       # helixar_hdp_validate implementation
+    └── releaseguard.ts       # helixar_releaseguard implementation
 tests/
 └── (mirrors src/)
 ```
 
 ## IP protection
 
-Per the implementation plan §6, internal detection methodology, Hunch Mode internals (IOB pipeline, weighted signals, anomaly scoring), Vigil sensor implementation, and exact thresholds are **never** exposed in this codebase. Public surface is rule IDs, severity buckets, public-safe detection categories, and remediation guidance only. CI includes a forbidden-symbol scan in `lib/vigil-parser.ts` to catch accidental leaks.
+Per the implementation plan §6, internal detection methodology, Hunch Mode internals, sensor implementation, and exact thresholds are **never** exposed in this codebase. Public surface is rule IDs, severity buckets, public-safe detection categories, and remediation guidance only. The earlier `helixar_triage_alert` tool was revoked in `v0.4.1` after review flagged that exposing kill-chain stage classifiers — even stripped — widened the public attack surface too far; `helixar_releaseguard` (wrapping the already-open-source Helixar-AI/ReleaseGuard) replaces it.
 
 ## Links
 

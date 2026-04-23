@@ -8,8 +8,8 @@
 //   - Each rule is a self-contained pure function.
 //
 // SENTINEL_QUICK_RULES is the top-8 set used by the authless quick mode
-// of helixar_inspect_mcp. Phase 5 adds the remaining 18 rules and
-// exports SENTINEL_DEEP_RULES.
+// of helixar_inspect_mcp. SENTINEL_DEEP_RULES is the full 26-rule set
+// (8 quick + 18 deep) used by the authenticated deep mode.
 
 import { z } from "zod";
 
@@ -300,6 +300,525 @@ export const SENTINEL_QUICK_RULES: SentinelRule[] = [
   S_008,
   S_010,
   S_017,
+];
+
+// ───────────────────────────────────────────────────────────────────────────
+// Deep-mode rule helpers (heuristics kept deliberately coarse — the
+// proprietary sequence / weighting logic lives outside this file).
+// ───────────────────────────────────────────────────────────────────────────
+
+function paramsText(tool: MCPTool): string {
+  if (tool.parameters === undefined || tool.parameters === null) return "";
+  try {
+    return JSON.stringify(tool.parameters).toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function manifestText(m: MCPManifest): string {
+  const parts: string[] = [m.name.toLowerCase()];
+  for (const t of m.tools) {
+    parts.push(t.name.toLowerCase());
+    parts.push((t.description ?? "").toLowerCase());
+    parts.push(paramsText(t));
+  }
+  return parts.join(" \n ");
+}
+
+const CREDENTIAL_QUERY_PATTERNS = [
+  /\bapi[_-]?key=/i,
+  /\baccess[_-]?token=/i,
+  /\bauth[_-]?token=/i,
+  /\btoken=[^&\s]*[a-z]/i,
+  /\?key=[a-z0-9]/i,
+];
+
+const NO_AUTH_PHRASES = [
+  "no authentication",
+  "no auth required",
+  "public endpoint",
+  "unauthenticated",
+];
+
+const LIST_ALL_PREFIXES = /^(list|fetch|get|dump|retrieve|export)_(all|every|everything)\b/;
+const LIST_PREFIX = /^list_[a-z]/;
+
+const PAGINATION_KEYS = ["limit", "page_size", "pagesize", "cursor", "offset", "page_token"];
+
+const RAW_QUERY_PARAM_NAMES = [
+  '"sql"',
+  '"raw_sql"',
+  '"raw_query"',
+  '"shell"',
+  '"shell_cmd"',
+  '"bash"',
+  '"cmd"',
+  '"command"',
+  '"exec"',
+];
+
+const UNESCAPED_OUTPUT_PHRASES = [
+  "raw html",
+  "unescaped",
+  "passthrough markdown",
+  "verbatim html",
+  "raw markdown",
+];
+
+const UNPINNED_PACKAGE_PHRASES = [
+  "npm install",
+  "pip install",
+  "latest version",
+  "requires package",
+  "pull the latest",
+];
+
+const DEV_ENDPOINT_PHRASES = [
+  "localhost",
+  "127.0.0.1",
+  "0.0.0.0",
+  "ngrok",
+  ".local",
+  ".test",
+];
+
+const DYNAMIC_EXEC_PATTERNS = [
+  /\beval\(/,
+  /\bexec\(/,
+  /\brun_code\b/,
+  /\bshell_exec\b/,
+  /\bexecute_script\b/,
+  /\beval\b/,
+];
+
+const ARBITRARY_FETCH_PHRASES = [
+  "any url",
+  "arbitrary url",
+  "fetch any",
+  "user-provided url",
+  "caller-supplied url",
+  "url supplied by the caller",
+];
+
+const PRIVILEGED_NAME_PATTERNS = [
+  /\badmin_/,
+  /\broot_/,
+  /\bsudo_/,
+  /\bimpersonate\b/,
+  /\bsuper_/,
+];
+
+const CALLBACK_PHRASES = [
+  "webhook",
+  "callback url",
+  "post to url",
+  "forward to",
+  "relay to",
+];
+
+const FS_NAME_PATTERNS = [
+  /\bread_file\b/,
+  /\bwrite_file\b/,
+  /\bdelete_file\b/,
+  /^fs_/,
+];
+
+const FS_PARAM_KEYS = ['"file_path"', '"filepath"', '"path"'];
+
+const CREDENTIAL_RETURN_PHRASES = [
+  "private_key",
+  "secret",
+  "password",
+  "api_key",
+  "client_secret",
+];
+
+// ───────────────────────────────────────────────────────────────────────────
+// The 18 deep-mode rules
+// ───────────────────────────────────────────────────────────────────────────
+
+const S_005: SentinelRule = {
+  id: "S-005",
+  severity: "high",
+  category: "authentication",
+  mode: "deep",
+  description:
+    "A tool places bearer credentials or API keys in a URL query string. Tokens passed in query parameters leak into access logs, referrer headers, and proxy caches.",
+  remediation:
+    "Move credentials into the Authorization header or a request body. Never accept credentials in the query string.",
+  check: (m) => {
+    const haystack = manifestText(m);
+    const hit = CREDENTIAL_QUERY_PATTERNS.find((p) => p.test(haystack));
+    return hit
+      ? { triggered: true, evidence: `credential-in-query pattern: ${hit}` }
+      : { triggered: false };
+  },
+};
+
+const S_006: SentinelRule = {
+  id: "S-006",
+  severity: "high",
+  category: "authentication",
+  mode: "deep",
+  description:
+    "The manifest advertises a mixed authentication surface — some tools describe themselves as public or unauthenticated while others require credentials.",
+  remediation:
+    "Keep the auth policy uniform across the server. If a read-only public tier is intentional, split it into a separate manifest with its own endpoint.",
+  check: (m) => {
+    const haystack = manifestText(m);
+    const hit = NO_AUTH_PHRASES.find((p) => haystack.includes(p));
+    return hit
+      ? { triggered: true, evidence: `mixed-auth phrase: "${hit}"` }
+      : { triggered: false };
+  },
+};
+
+const S_009: SentinelRule = {
+  id: "S-009",
+  severity: "medium",
+  category: "data_exfiltration",
+  mode: "deep",
+  description:
+    "A list / get-all tool declares no pagination parameter. Callers can retrieve the entire dataset in one request.",
+  remediation:
+    "Require a pagination cursor or row cap on any list / search / bulk-read tool. Document a maximum page size.",
+  check: (m) => {
+    const offenders = m.tools.filter((t) => {
+      const nameLc = t.name.toLowerCase();
+      const isListy = LIST_ALL_PREFIXES.test(nameLc) || LIST_PREFIX.test(nameLc);
+      if (!isListy) return false;
+      const paramBlob = paramsText(t);
+      const hasPagination = PAGINATION_KEYS.some((k) => paramBlob.includes(k));
+      return !hasPagination;
+    });
+    return offenders.length > 0
+      ? {
+          triggered: true,
+          evidence: `list tool(s) without pagination: ${offenders.map((o) => o.name).join(", ")}`,
+        }
+      : { triggered: false };
+  },
+};
+
+const S_011: SentinelRule = {
+  id: "S-011",
+  severity: "high",
+  category: "injection",
+  mode: "deep",
+  description:
+    "A tool accepts raw SQL or shell input via a parameter (e.g. `sql`, `cmd`, `shell`). The caller is trusted to construct safe commands — a prompt-injected agent will not.",
+  remediation:
+    "Replace raw-string pass-through with a structured parameter schema. For queries, expose a typed field list and build the statement server-side.",
+  check: (m) => {
+    const offenders = m.tools.filter((t) => {
+      const blob = paramsText(t);
+      return RAW_QUERY_PARAM_NAMES.some((k) => blob.includes(k));
+    });
+    return offenders.length > 0
+      ? {
+          triggered: true,
+          evidence: `raw query/shell parameter(s): ${offenders.map((o) => o.name).join(", ")}`,
+        }
+      : { triggered: false };
+  },
+};
+
+const S_012: SentinelRule = {
+  id: "S-012",
+  severity: "medium",
+  category: "injection",
+  mode: "deep",
+  description:
+    "A tool returns unescaped HTML or markdown to the caller. Downstream renderers can be tricked into executing injected scripts or following hidden links.",
+  remediation:
+    "Escape or strip active markup before returning. Document the output as plain text.",
+  check: (m) => {
+    const haystack = manifestText(m);
+    const hits = UNESCAPED_OUTPUT_PHRASES.filter((p) => haystack.includes(p));
+    return hits.length > 0
+      ? { triggered: true, evidence: `unescaped-output phrase(s): ${hits.join(" | ")}` }
+      : { triggered: false };
+  },
+};
+
+const S_013: SentinelRule = {
+  id: "S-013",
+  severity: "high",
+  category: "supply_chain",
+  mode: "deep",
+  description:
+    "A tool installs or resolves third-party packages at runtime without pinning a version. A compromised upstream release lands in every future call.",
+  remediation:
+    "Pin dependencies at build time. Remove any runtime `install`/`fetch-latest` behaviour from the tool surface.",
+  check: (m) => {
+    const haystack = manifestText(m);
+    const hits = UNPINNED_PACKAGE_PHRASES.filter((p) => haystack.includes(p));
+    return hits.length > 0
+      ? { triggered: true, evidence: `unpinned package hint(s): ${hits.join(" | ")}` }
+      : { triggered: false };
+  },
+};
+
+const S_014: SentinelRule = {
+  id: "S-014",
+  severity: "medium",
+  category: "supply_chain",
+  mode: "deep",
+  description:
+    "Manifest text references a development or local-only endpoint (localhost, 127.0.0.1, ngrok, `.local`, `.test`). A production manifest should not depend on developer machines.",
+  remediation:
+    "Strip dev endpoints from descriptions. If the manifest is intended for local use only, mark it clearly and do not publish.",
+  check: (m) => {
+    const haystack = manifestText(m);
+    const hits = DEV_ENDPOINT_PHRASES.filter((p) => haystack.includes(p));
+    return hits.length > 0
+      ? { triggered: true, evidence: `dev endpoint reference(s): ${hits.join(", ")}` }
+      : { triggered: false };
+  },
+};
+
+const S_015: SentinelRule = {
+  id: "S-015",
+  severity: "critical",
+  category: "injection",
+  mode: "deep",
+  description:
+    "A tool exposes a dynamic-execution primitive (`eval`, `exec`, `run_code`, `shell_exec`). Any prompt-injected input becomes arbitrary code.",
+  remediation:
+    "Remove dynamic-execution tools from the manifest. If scripting is required, sandbox it behind a restricted interpreter with a strict allowlist.",
+  check: (m) => {
+    const haystack = manifestText(m);
+    const hit = DYNAMIC_EXEC_PATTERNS.find((p) => p.test(haystack));
+    return hit
+      ? { triggered: true, evidence: `dynamic-exec match: ${hit}` }
+      : { triggered: false };
+  },
+};
+
+const S_016: SentinelRule = {
+  id: "S-016",
+  severity: "medium",
+  category: "supply_chain",
+  mode: "deep",
+  description:
+    "A tool fetches arbitrary external URLs supplied by the caller. The server becomes a confused-deputy proxy to anywhere on the internet (SSRF).",
+  remediation:
+    "Constrain outbound URLs to a documented allowlist. Reject private ranges and metadata endpoints at the server.",
+  check: (m) => {
+    const haystack = manifestText(m);
+    const hits = ARBITRARY_FETCH_PHRASES.filter((p) => haystack.includes(p));
+    return hits.length > 0
+      ? { triggered: true, evidence: `arbitrary-fetch phrase(s): ${hits.join(" | ")}` }
+      : { triggered: false };
+  },
+};
+
+const S_018: SentinelRule = {
+  id: "S-018",
+  severity: "medium",
+  category: "behavioral",
+  mode: "deep",
+  description:
+    "The manifest exposes an oversized tool surface (more than 20 tools). Large surfaces are harder to audit and harder to scope.",
+  remediation:
+    "Split the manifest into focused sub-servers. Group tools by trust tier so each can be authorised independently.",
+  check: (m) => {
+    return m.tools.length > 20
+      ? { triggered: true, evidence: `tool count = ${m.tools.length}` }
+      : { triggered: false };
+  },
+};
+
+const S_019: SentinelRule = {
+  id: "S-019",
+  severity: "low",
+  category: "behavioral",
+  mode: "deep",
+  description:
+    "At least one tool ships with an empty or trivial description. Models are more likely to misuse under-documented tools.",
+  remediation:
+    "Give every tool a one-sentence description that states its input, its side effects, and its intended caller.",
+  check: (m) => {
+    const offenders = m.tools.filter((t) => (t.description ?? "").trim().length < 10);
+    return offenders.length > 0
+      ? {
+          triggered: true,
+          evidence: `tool(s) with trivial description: ${offenders.map((o) => o.name).join(", ")}`,
+        }
+      : { triggered: false };
+  },
+};
+
+const S_020: SentinelRule = {
+  id: "S-020",
+  severity: "high",
+  category: "authorization",
+  mode: "deep",
+  description:
+    "A privileged-sounding tool (`admin_`, `root_`, `sudo_`, `impersonate`) is exposed without a matching restricted scope.",
+  remediation:
+    "Require a dedicated scope (e.g. `admin:*`) on privileged tools. Never let a read-tier token invoke them.",
+  check: (m) => {
+    const scopes = (m.auth?.scopes ?? []).map((s) => s.toLowerCase());
+    const hasAdminScope = scopes.some((s) => s.includes("admin") || s.includes("root"));
+    if (hasAdminScope) return { triggered: false };
+    const offenders = m.tools.filter((t) => {
+      const nameLc = t.name.toLowerCase();
+      return PRIVILEGED_NAME_PATTERNS.some((p) => p.test(nameLc));
+    });
+    return offenders.length > 0
+      ? {
+          triggered: true,
+          evidence: `privileged tool(s) without admin scope: ${offenders.map((o) => o.name).join(", ")}`,
+        }
+      : { triggered: false };
+  },
+};
+
+const S_021: SentinelRule = {
+  id: "S-021",
+  severity: "medium",
+  category: "authorization",
+  mode: "deep",
+  description:
+    "OAuth scopes are coarse-grained — the declared scopes do not separate read from write. One scope grants every capability.",
+  remediation:
+    "Split scopes by verb and object (e.g. `read:messages`, `write:messages`). Assign the narrowest verb a tool can tolerate.",
+  check: (m) => {
+    const scopes = m.auth?.scopes ?? [];
+    if (scopes.length === 0) return { triggered: false };
+    const coarse = scopes.filter((s) => {
+      if (s === "*" || s === "all") return false; // S-002 handles wildcards
+      return !/^(read|write|admin|delete|list|create|update):/i.test(s);
+    });
+    return coarse.length > 0
+      ? { triggered: true, evidence: `coarse scope(s): ${coarse.join(", ")}` }
+      : { triggered: false };
+  },
+};
+
+const S_022: SentinelRule = {
+  id: "S-022",
+  severity: "medium",
+  category: "data_exfiltration",
+  mode: "deep",
+  description:
+    "A tool declares an external callback or webhook. Tool output leaves the trust boundary before the caller has seen it.",
+  remediation:
+    "Restrict webhook targets to an allowlist. Log callbacks per-principal so unexpected destinations are catchable.",
+  check: (m) => {
+    const haystack = manifestText(m);
+    const hits = CALLBACK_PHRASES.filter((p) => haystack.includes(p));
+    return hits.length > 0
+      ? { triggered: true, evidence: `callback phrase(s): ${hits.join(" | ")}` }
+      : { triggered: false };
+  },
+};
+
+const S_023: SentinelRule = {
+  id: "S-023",
+  severity: "high",
+  category: "authorization",
+  mode: "deep",
+  description:
+    "A tool offers arbitrary filesystem access (reads or writes files by caller-supplied path). Any prompt-injected path escapes the intended working set.",
+  remediation:
+    "Replace generic `read_file`/`write_file` surfaces with purpose-specific tools that resolve paths against a fixed root.",
+  check: (m) => {
+    const offenders = m.tools.filter((t) => {
+      const nameLc = t.name.toLowerCase();
+      const hasName = FS_NAME_PATTERNS.some((p) => p.test(nameLc));
+      if (hasName) return true;
+      const blob = paramsText(t);
+      return FS_PARAM_KEYS.some((k) => blob.includes(k));
+    });
+    return offenders.length > 0
+      ? {
+          triggered: true,
+          evidence: `filesystem tool(s): ${offenders.map((o) => o.name).join(", ")}`,
+        }
+      : { triggered: false };
+  },
+};
+
+const S_024: SentinelRule = {
+  id: "S-024",
+  severity: "medium",
+  category: "behavioral",
+  mode: "deep",
+  description:
+    "Manifest version is pre-1.0 (`0.x`). The tool surface is not contractually stable and callers cannot pin confidently.",
+  remediation:
+    "Cut a 1.0 release once the tool surface stabilises. Use semver to signal breaking changes.",
+  check: (m) => {
+    return /^0\./.test(m.version)
+      ? { triggered: true, evidence: `version=${m.version}` }
+      : { triggered: false };
+  },
+};
+
+const S_025: SentinelRule = {
+  id: "S-025",
+  severity: "low",
+  category: "supply_chain",
+  mode: "deep",
+  description:
+    "The manifest name has no publisher/vendor namespace. Authorship and trust attribution are ambiguous.",
+  remediation:
+    "Namespace the server name (e.g. `helixar/inspector`). Publish under a verified vendor identity.",
+  check: (m) => {
+    const name = m.name.trim();
+    const hasNamespace = /[\/:\.]/.test(name) || /-/.test(name);
+    return hasNamespace
+      ? { triggered: false }
+      : { triggered: true, evidence: `manifest name "${name}" has no namespace` };
+  },
+};
+
+const S_026: SentinelRule = {
+  id: "S-026",
+  severity: "high",
+  category: "data_exfiltration",
+  mode: "deep",
+  description:
+    "A tool description indicates it returns credential material (private keys, secrets, passwords, API keys) in its response body.",
+  remediation:
+    "Remove credential-bearing tools. If a rotation workflow is needed, return references or short-lived handles, not the secrets themselves.",
+  check: (m) => {
+    const offenders = m.tools.filter((t) => {
+      const descLc = (t.description ?? "").toLowerCase();
+      return CREDENTIAL_RETURN_PHRASES.some((p) => descLc.includes(p));
+    });
+    return offenders.length > 0
+      ? {
+          triggered: true,
+          evidence: `credential-return tool(s): ${offenders.map((o) => o.name).join(", ")}`,
+        }
+      : { triggered: false };
+  },
+};
+
+export const SENTINEL_DEEP_RULES: SentinelRule[] = [
+  ...SENTINEL_QUICK_RULES,
+  S_005,
+  S_006,
+  S_009,
+  S_011,
+  S_012,
+  S_013,
+  S_014,
+  S_015,
+  S_016,
+  S_018,
+  S_019,
+  S_020,
+  S_021,
+  S_022,
+  S_023,
+  S_024,
+  S_025,
+  S_026,
 ];
 
 // ───────────────────────────────────────────────────────────────────────────

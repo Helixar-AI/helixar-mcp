@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Helixar Security MCP server — registers the three tools and runs over
-// stdio for local Claude Desktop and dev. The Cloudflare Workers /
-// remote HTTP transport adapter lives in src/worker.ts (Phase 7).
+// Helixar Security MCP server — registers Helixar's public MCP tools and
+// runs over stdio for local Claude Desktop and dev. The Cloudflare
+// Workers / remote HTTP transport adapter lives in src/worker.ts
+// (Phase 7).
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -20,9 +21,9 @@ import {
   inspectMcp,
 } from "./tools/inspect-mcp.js";
 import {
-  TriageAlertInputSchema,
-  triageAlert,
-} from "./tools/triage-alert.js";
+  ReleaseGuardInputSchema,
+  releaseguard,
+} from "./tools/releaseguard.js";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Tool descriptors
@@ -52,12 +53,13 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
     inputSchema: zodToJsonSchema(HdpValidateInputSchema),
   },
   {
-    name: "helixar_triage_alert",
+    name: "helixar_releaseguard",
     description:
-      "Triage a Vigil / ATP detection payload into a kill-chain stage (Preparation / Positioning / " +
-      "Expansion / Objective) with a Claude-generated narrative in your choice of executive, " +
-      "technical, or brief format. Severity is hard-capped at 'high' on output.",
-    inputSchema: zodToJsonSchema(TriageAlertInputSchema),
+      "Wrap the open-source Helixar-AI/ReleaseGuard artifact policy engine. Quick mode runs " +
+      "`releaseguard check` (secrets, metadata leaks, license gaps) — authless, report-only. " +
+      "Deep mode unlocks the full `fix`/`harden`/`sbom` command set behind an api_key. Output " +
+      "mirrors helixar_inspect_mcp: risk_score, risk_level, findings[], narrated summary.",
+    inputSchema: zodToJsonSchema(ReleaseGuardInputSchema),
   },
 ];
 
@@ -80,8 +82,8 @@ export async function dispatchTool(
         string,
         unknown
       >;
-    case "helixar_triage_alert":
-      return (await triageAlert(args as Parameters<typeof triageAlert>[0])) as unknown as Record<
+    case "helixar_releaseguard":
+      return (await releaseguard(args as Parameters<typeof releaseguard>[0])) as unknown as Record<
         string,
         unknown
       >;
