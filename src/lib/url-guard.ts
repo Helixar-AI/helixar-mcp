@@ -7,6 +7,11 @@
 //   • DNS lookup with private-range rejection (loopback, RFC1918, link-local
 //     incl. 169.254.169.254 cloud metadata, IPv6 ULA/link-local/::1, and
 //     IPv4-mapped IPv6 for any blocked IPv4).
+//   • DNS-rebinding protection — the IP returned by our validated lookup is
+//     pinned for the actual TCP connect via a per-request undici Agent with a
+//     custom `connect.lookup` hook. undici therefore never re-resolves the
+//     hostname and cannot be steered to a private IP by a TTL=0 authoritative
+//     resolver. TLS SNI / cert verification still use the hostname.
 //   • redirect: "manual" — every 3xx is re-validated through the same guard;
 //     max 3 redirect hops.
 //   • AbortController-driven timeout (default 10 s).
@@ -17,6 +22,7 @@
 // render a structured error without guessing the failure mode.
 
 import { lookup } from "node:dns/promises";
+import { Agent, type Dispatcher } from "undici";
 
 export interface GuardedFetchOptions {
   maxBytes?: number;
@@ -107,10 +113,17 @@ export function isPrivateAddress(addr: string, family: number): boolean {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Host safety check — one DNS lookup, reject if any result is private.
+// DNS + pinned-dispatcher construction.
 // ───────────────────────────────────────────────────────────────────────────
 
-async function hostIsSafe(hostname: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+interface SafeAddress {
+  address: string;
+  family: 4 | 6;
+}
+
+async function resolveAndValidate(
+  hostname: string,
+): Promise<{ ok: true; safe: SafeAddress } | { ok: false; reason: string }> {
   // Strip the surrounding brackets that URL parser keeps on IPv6 literals.
   const host = hostname.startsWith("[") && hostname.endsWith("]")
     ? hostname.slice(1, -1)
@@ -125,12 +138,44 @@ async function hostIsSafe(hostname: string): Promise<{ ok: true } | { ok: false;
   if (results.length === 0) {
     return { ok: false, reason: "dns_lookup_failed: no addresses" };
   }
+  // Reject if ANY returned address is private — a public+private pair is the
+  // classic rebinding trick.
   for (const r of results) {
     if (isPrivateAddress(r.address, r.family)) {
-      return { ok: false, reason: `blocked_address: ${r.address} is in a private/reserved range` };
+      return { ok: false, reason: "blocked_address: private/reserved range" };
     }
   }
-  return { ok: true };
+  const chosen = results[0];
+  if (!chosen || (chosen.family !== 4 && chosen.family !== 6)) {
+    return { ok: false, reason: "dns_lookup_failed: unexpected family" };
+  }
+  return {
+    ok: true,
+    safe: { address: chosen.address, family: chosen.family as 4 | 6 },
+  };
+}
+
+/**
+ * Build an undici Agent whose `connect.lookup` hook ALWAYS returns the
+ * pre-validated IP. This closes the DNS-TOCTOU / rebinding gap — undici
+ * cannot re-resolve the hostname and be steered to a private IP between our
+ * check and the actual connect(). TLS SNI / cert verification still use the
+ * hostname, so HTTPS to any public host continues to work unchanged.
+ *
+ * Exported for unit-testing in isolation.
+ */
+export function _createPinnedDispatcher(safe: SafeAddress): Dispatcher {
+  return new Agent({
+    connect: {
+      lookup: (
+        _hostname: string,
+        _options: unknown,
+        cb: (err: Error | null, address: string, family: number) => void,
+      ) => {
+        cb(null, safe.address, safe.family);
+      },
+    },
+  });
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -165,18 +210,23 @@ async function fetchWithGuard(
     return { ok: false, reason: `insecure_scheme: ${scheme}` };
   }
 
-  const safe = await hostIsSafe(parsed.hostname);
-  if (!safe.ok) return safe;
+  const resolved = await resolveAndValidate(parsed.hostname);
+  if (!resolved.ok) return resolved;
+
+  const dispatcher = _createPinnedDispatcher(resolved.safe);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   let response: Response;
   try {
+    // `dispatcher` is a Node-fetch extension (from undici) not covered by the
+    // built-in lib.dom types, so we cast to add the field.
     response = await fetch(url, {
       redirect: "manual",
       signal: controller.signal,
-    });
+      dispatcher,
+    } as RequestInit & { dispatcher: Dispatcher });
   } catch (err) {
     clearTimeout(timer);
     if (controller.signal.aborted) {
