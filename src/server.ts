@@ -96,7 +96,12 @@ export async function dispatchTool(
 // MCP server bootstrap (stdio transport)
 // ───────────────────────────────────────────────────────────────────────────
 
-export async function startServer(): Promise<void> {
+/**
+ * Build a fully-configured MCP `Server` with the Helixar tool handlers
+ * registered. Kept transport-agnostic so tests can wire an in-memory
+ * transport pair while `startServer` wires stdio.
+ */
+export function buildServer(): Server {
   const server = new Server(
     {
       name: "helixar-security",
@@ -127,6 +132,11 @@ export async function startServer(): Promise<void> {
     }
   });
 
+  return server;
+}
+
+export async function startServer(): Promise<void> {
+  const server = buildServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

@@ -1,5 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { narrate } from "../../src/lib/narrate.js";
+import { narrate, _resetNarrateWarning } from "../../src/lib/narrate.js";
+
+// Hoisted mock state so `vi.mock` factories can reach it.
+const mocks = vi.hoisted(() => ({
+  create: vi.fn(),
+}));
+
+vi.mock("@anthropic-ai/sdk", () => {
+  // Must be a real class (or `function` with `prototype`) so `new Anthropic(...)`
+  // works; `vi.fn().mockImplementation(arrow)` yields a non-constructable fn.
+  class AnthropicMock {
+    messages = { create: mocks.create };
+  }
+  return { default: AnthropicMock };
+});
 
 describe("narrate", () => {
   let originalKey: string | undefined;
@@ -8,6 +22,8 @@ describe("narrate", () => {
     originalKey = process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
     vi.restoreAllMocks();
+    mocks.create.mockReset();
+    _resetNarrateWarning();
   });
 
   afterEach(() => {
@@ -27,8 +43,9 @@ describe("narrate", () => {
 
   it("never throws — even when the underlying SDK throws, returns a fallback string", async () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-test-FAKE";
-    // The SDK call will fail because the key is bogus; the helper must catch
-    // and return a fallback rather than propagating the error.
+    mocks.create.mockRejectedValueOnce(new Error("401 unauthorized"));
+    // The SDK call will fail; the helper must catch and return a fallback
+    // rather than propagating the error.
     const result = await narrate("anything", { maxTokens: 32 });
     expect(typeof result).toBe("string");
     expect(result.startsWith("[fallback]")).toBe(true);
@@ -44,5 +61,70 @@ describe("narrate", () => {
     expect(result.startsWith("[fallback]")).toBe(true);
     // Audience tag visible in fallback for debugging
     expect(result.toLowerCase()).toContain("executive");
+  });
+
+  describe("SDK success path", () => {
+    it("returns the trimmed text when the SDK resolves with a text block", async () => {
+      process.env.ANTHROPIC_API_KEY = "sk-ant-test-FAKE";
+      mocks.create.mockResolvedValueOnce({
+        content: [{ type: "text", text: "hi there" }],
+      });
+      const result = await narrate("prompt");
+      expect(result).toBe("hi there");
+      expect(result.startsWith("[fallback]")).toBe(false);
+    });
+
+    it("trims leading/trailing whitespace on the SDK text block", async () => {
+      process.env.ANTHROPIC_API_KEY = "sk-ant-test-FAKE";
+      mocks.create.mockResolvedValueOnce({
+        content: [{ type: "text", text: "  hi  " }],
+      });
+      const result = await narrate("prompt");
+      expect(result).toBe("hi");
+    });
+
+    it("falls back when the SDK resolves with no text block", async () => {
+      process.env.ANTHROPIC_API_KEY = "sk-ant-test-FAKE";
+      mocks.create.mockResolvedValueOnce({
+        content: [{ type: "tool_use", id: "toolu_123", name: "noop", input: {} }],
+      });
+      const result = await narrate("prompt with subject");
+      expect(result.startsWith("[fallback]")).toBe(true);
+      expect(result.toLowerCase()).toContain("prompt with subject");
+    });
+
+    it("does NOT fire the warn-once guard when the SDK resolves successfully", async () => {
+      process.env.ANTHROPIC_API_KEY = "sk-ant-test-FAKE";
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      mocks.create.mockResolvedValue({
+        content: [{ type: "text", text: "ok" }],
+      });
+      const first = await narrate("p1");
+      const second = await narrate("p2");
+      expect(first).toBe("ok");
+      expect(second).toBe("ok");
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("_resetNarrateWarning (warn-once guard seam)", () => {
+    it("is reset by _resetNarrateWarning() so a later failure warns again", async () => {
+      process.env.ANTHROPIC_API_KEY = "sk-ant-test-FAKE";
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      mocks.create.mockRejectedValue(new Error("boom"));
+
+      // First call: warns.
+      await narrate("p1");
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+
+      // Second call: warn-once guard holds.
+      await narrate("p2");
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+
+      // Reset seam → third call warns again.
+      _resetNarrateWarning();
+      await narrate("p3");
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+    });
   });
 });
