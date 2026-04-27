@@ -1,0 +1,25 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "ai.helixar/mcp",
+  "title": "Helixar Security",
+  "description": "Agentic-AI security tools for Claude. Scan MCP server manifests against Sentinel detection rules (auth gaps, prompt injection, PII leaks, unbounded exports), validate HDP delegation chains against the IETF draft, and run release-artifact policy checks.",
+  "websiteUrl": "https://helixar.ai/connect",
+  "repository": {
+    "url": "https://github.com/Helixar-AI/helixar-mcp",
+    "source": "github"
+  },
+  "version": "0.0.1",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.helixar.ai/mcp"
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "tool": "manual",
+      "version": "0.0.1",
+      "notes": "Workers deployment exposes 2 of 3 tools (helixar_inspect_mcp, helixar_hdp_validate). The third tool (helixar_releaseguard) wraps a Go binary and is stdio-only — install the npm package locally for the full set."
+    }
+  }
+}
