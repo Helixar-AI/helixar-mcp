@@ -1,6 +1,8 @@
 # Helixar Security — Claude MCP Connector
 
-Agentic-AI security tools for Claude, exposed as a remote MCP server and listed in the Claude Connectors Directory.
+Agentic-AI security tools for Claude, exposed as a remote MCP server.
+
+> **Status:** Live at [`https://mcp.helixar.ai/mcp`](https://mcp.helixar.ai/mcp). Two tools available remotely (Streamable HTTP); a third runs locally over stdio. Public, no-auth in v1 — OAuth lands with Phase 8.
 
 | Tool | What it does |
 |---|---|
@@ -17,18 +19,55 @@ npm run build
 npm start          # stdio MCP server
 ```
 
-## Add to Claude (custom connector)
+## Add to Claude
 
-The hosted server lives at `https://mcp.helixar.ai/mcp`. To use it before Anthropic lists it in the directory:
+### Option A — Custom connector (claude.ai Pro/Team/Enterprise)
 
-1. Open Claude → Settings → Connectors → **Add custom connector**
+1. Open Claude → Settings → **Connectors** → **Add custom connector**
 2. URL: `https://mcp.helixar.ai/mcp`
-3. Auth: OAuth 2.0 (Claude handles the flow)
-4. Save and refresh — the tools appear in the tool picker.
+3. Auth: **None** (v1 is publicly accessible; OAuth lands with Phase 8)
+4. Save and refresh — `helixar_inspect_mcp` and `helixar_hdp_validate` appear in the tool picker.
 
-The remote (Workers) deployment exposes **two of three tools**: `helixar_inspect_mcp` and `helixar_hdp_validate`. `helixar_releaseguard` shells out to the `releaseguard` Go binary via `child_process`, which has no Workers equivalent — it remains stdio-only. To use it, install locally and point Claude Desktop at the stdio server (next paragraph).
+### Option B — Anthropic API (`mcp_servers`)
 
-For local development, point Claude Desktop at `node /path/to/helixar-mcp/dist/server.js` as a stdio server. All three tools are available over stdio.
+Add the server directly in a Messages API call (beta header `mcp-client-2025-11-20`):
+
+```bash
+curl https://api.anthropic.com/v1/messages \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "anthropic-beta: mcp-client-2025-11-20" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "claude-opus-4-7",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Scan https://example.com/.well-known/mcp.json"}],
+    "mcp_servers": [
+      {"type": "url", "url": "https://mcp.helixar.ai/mcp", "name": "helixar-security"}
+    ],
+    "tools": [{"type": "mcp_toolset", "mcp_server_name": "helixar-security"}]
+  }'
+```
+
+### Option C — Local stdio (all three tools)
+
+The Workers deployment exposes **two of three tools**. `helixar_releaseguard` shells out to a Go binary via `child_process` and has no Workers equivalent — it remains stdio-only. For the full set, run locally:
+
+```bash
+git clone https://github.com/Helixar-AI/helixar-mcp && cd helixar-mcp
+npm install && npm run build
+# Then point Claude Desktop / Claude Code at:  node /absolute/path/to/dist/server.js
+```
+
+### Smoke-test the live server
+
+```bash
+curl https://mcp.helixar.ai/health
+curl -X POST https://mcp.helixar.ai/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
 
 ## Architecture
 
@@ -36,15 +75,16 @@ For local development, point Claude Desktop at `node /path/to/helixar-mcp/dist/s
 - **MCP SDK:** `@modelcontextprotocol/sdk` (official Anthropic)
 - **Validation:** Zod for tool input schemas
 - **Narration:** Anthropic SDK with deterministic fallback when no API key is configured
-- **Hosting:** Cloudflare Workers (`src/worker.ts`, deployed to `mcp.helixar.ai`)
-- **Auth:** OAuth 2.0 + Dynamic Client Registration (required for directory listing)
+- **Remote hosting:** Cloudflare Workers (`src/worker.ts`), `WebStandardStreamableHTTPServerTransport`, stateless
+- **Local hosting:** Node 20+ stdio (`src/server.ts`)
+- **Auth:** v1 is open (deep mode requires an `api_key` field in the tool's input arguments). OAuth 2.0 + Dynamic Client Registration is Phase 8.
 
-## Auth tiers
+## Tool tiers
 
-| Mode | Auth | Tools / scope | Purpose |
+| Mode | How auth is signaled | Tools / scope | Purpose |
 |---|---|---|---|
-| Quick / public | none | `inspect_mcp` (top-8 rules), `hdp_validate`, `releaseguard check` | Maximum reach — zero-friction for community adoption |
-| Authenticated | API key (OAuth2) | `inspect_mcp` deep mode (26 rules), `releaseguard fix/harden/sbom` | Pilot customers + paid tier |
+| Quick / public | no `api_key` in tool args | `inspect_mcp` (top-8 rules), `hdp_validate`, `releaseguard check` (stdio only) | Maximum reach — zero-friction for community adoption |
+| Deep | non-empty `api_key` field in tool args | `inspect_mcp` deep mode (26 rules), `releaseguard fix/harden/sbom` (stdio only) | Pilot customers + paid tier (real key validation lands with Phase 8 OAuth) |
 
 ## Repository layout
 
