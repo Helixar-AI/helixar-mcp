@@ -126,7 +126,15 @@ export default {
       proc.env.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
     }
 
-    if (url.pathname === "/" || url.pathname === "/health") {
+    // Root redirects to the marketing landing page so anyone who types the
+    // bare domain into a browser doesn't stare at JSON. MCP clients hit /mcp
+    // directly and never traverse this branch.
+    if (url.pathname === "/") {
+      return Response.redirect("https://helixar.ai/connect/", 302);
+    }
+
+    // /health stays as a JSON probe for monitoring + smoke tests.
+    if (url.pathname === "/health") {
       return new Response(
         JSON.stringify({ name: "helixar-mcp", status: "ok" }),
         { status: 200, headers: { "content-type": "application/json" } },
