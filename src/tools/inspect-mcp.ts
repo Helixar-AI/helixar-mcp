@@ -22,7 +22,7 @@ import {
   type RuleFinding,
   type SentinelRule,
 } from "../lib/sentinel-rules.js";
-import { guardedFetch } from "../lib/url-guard.js";
+import { guardedFetch } from "#url-guard";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Input + output shapes

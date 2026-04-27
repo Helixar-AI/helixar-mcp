@@ -1,0 +1,26 @@
+name = "helixar-mcp"
+main = "dist/worker.js"
+compatibility_date = "2026-04-27"
+compatibility_flags = ["nodejs_compat"]
+
+# Compile TypeScript before wrangler bundles. This is the source of truth for
+# build behavior — never let wrangler's implicit esbuild diverge from the same
+# tsc output the test suite runs against.
+[build]
+command = "npm run build"
+
+# Custom domain binding — requires the helixar.ai zone to be active on this
+# Cloudflare account. The zone-managed cert covers mcp.helixar.ai.
+[[routes]]
+pattern = "mcp.helixar.ai"
+custom_domain = true
+
+# Secrets are set via `wrangler secret put`:
+#   wrangler secret put ANTHROPIC_API_KEY
+#
+# Stateless transport in v1 — every tool call is independent, so we don't need
+# Durable Objects for session affinity. If the Claude Connector path ever
+# requires stateful sessions (sampling, long-lived subscriptions), revisit.
+
+[observability.logs]
+enabled = true

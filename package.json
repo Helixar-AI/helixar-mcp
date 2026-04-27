@@ -10,6 +10,12 @@
   "bin": {
     "helixar-mcp": "dist/server.js"
   },
+  "imports": {
+    "#url-guard": {
+      "workerd": "./dist/lib/url-guard.workers.js",
+      "default": "./dist/lib/url-guard.js"
+    }
+  },
   "files": [
     "dist",
     "README.md",
@@ -23,7 +29,10 @@
     "test:watch": "vitest",
     "lint": "eslint . --ext .ts",
     "start": "node dist/server.js",
-    "dev": "tsx src/server.ts"
+    "dev": "tsx src/server.ts",
+    "worker:dev": "wrangler dev",
+    "worker:deploy": "wrangler deploy",
+    "worker:tail": "wrangler tail"
   },
   "keywords": [
     "mcp",
@@ -48,12 +57,14 @@
     "zod-to-json-schema": "3.23.5"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260426.1",
     "@types/node": "20.17.10",
     "@typescript-eslint/eslint-plugin": "8.18.2",
     "@typescript-eslint/parser": "8.18.2",
     "eslint": "9.39.4",
     "tsx": "4.21.0",
     "typescript": "5.7.2",
-    "vitest": "4.1.5"
+    "vitest": "4.1.5",
+    "wrangler": "^4.85.0"
   }
 }

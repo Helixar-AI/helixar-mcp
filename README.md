@@ -19,14 +19,16 @@ npm start          # stdio MCP server
 
 ## Add to Claude (custom connector)
 
-The hosted server lives at `https://mcp.helixar.ai`. To use it before Anthropic lists it in the directory:
+The hosted server lives at `https://mcp.helixar.ai/mcp`. To use it before Anthropic lists it in the directory:
 
 1. Open Claude → Settings → Connectors → **Add custom connector**
-2. URL: `https://mcp.helixar.ai`
+2. URL: `https://mcp.helixar.ai/mcp`
 3. Auth: OAuth 2.0 (Claude handles the flow)
-4. Save and refresh — the three tools appear in the tool picker.
+4. Save and refresh — the tools appear in the tool picker.
 
-For local development, point Claude Desktop at `node /path/to/helixar-mcp/dist/server.js` as a stdio server.
+The remote (Workers) deployment exposes **two of three tools**: `helixar_inspect_mcp` and `helixar_hdp_validate`. `helixar_releaseguard` shells out to the `releaseguard` Go binary via `child_process`, which has no Workers equivalent — it remains stdio-only. To use it, install locally and point Claude Desktop at the stdio server (next paragraph).
+
+For local development, point Claude Desktop at `node /path/to/helixar-mcp/dist/server.js` as a stdio server. All three tools are available over stdio.
 
 ## Architecture
 
@@ -48,19 +50,23 @@ For local development, point Claude Desktop at `node /path/to/helixar-mcp/dist/s
 
 ```
 src/
-├── server.ts                 # MCP stdio entrypoint
-├── worker.ts                 # Cloudflare Workers HTTP adapter (Phase 7)
+├── server.ts                 # MCP stdio entrypoint (all 3 tools)
+├── worker.ts                 # Cloudflare Workers HTTP adapter (2 tools — see above)
 ├── lib/
 │   ├── narrate.ts            # Anthropic call + deterministic fallback
 │   ├── sentinel-rules.ts     # 26 Sentinel detection rules (top-8 quick + 18 deep)
 │   ├── hdp-schema.ts         # HDP chain types + 9 validation rules
-│   └── releaseguard-runner.ts # CLI adapter for the releaseguard binary
+│   ├── releaseguard-runner.ts # CLI adapter for the releaseguard binary (stdio only)
+│   ├── url-classify.ts       # Pure IP classification (shared by both runtimes)
+│   ├── url-guard.ts          # SSRF guard — Node (undici Agent + DNS pinning)
+│   └── url-guard.workers.ts  # SSRF guard — Workers (Cloudflare DoH + fetch)
 └── tools/
     ├── inspect-mcp.ts        # helixar_inspect_mcp implementation
     ├── hdp-validate.ts       # helixar_hdp_validate implementation
-    └── releaseguard.ts       # helixar_releaseguard implementation
+    └── releaseguard.ts       # helixar_releaseguard implementation (stdio only)
 tests/
 └── (mirrors src/)
+wrangler.toml                 # Workers deploy config (mcp.helixar.ai)
 ```
 
 ## IP protection
