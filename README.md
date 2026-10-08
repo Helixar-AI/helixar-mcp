@@ -121,7 +121,7 @@ Either prompt produces a CRIT-level finding (risk_score 100) flagging:
 
 ## Architecture
 
-- **Language:** TypeScript ESM (Node 20+)
+- **Language:** TypeScript ESM (Node 20+ for stdio; Node 22+ for Wrangler development and deployment)
 - **MCP SDK:** `@modelcontextprotocol/sdk` (official Anthropic)
 - **Validation:** Zod for tool input schemas
 - **Narration:** Anthropic SDK with deterministic fallback when no API key is configured
