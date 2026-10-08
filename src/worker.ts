@@ -145,16 +145,32 @@ export default {
       return new Response("not found", { status: 404 });
     }
 
+    // A fresh stateless server cannot send messages on a standalone GET
+    // stream. The SDK still opens one by default, leaving Workers with an
+    // idle stream and causing clients to reconnect when it is canceled.
+    // MCP permits 405 when the server does not offer a GET SSE stream.
+    if (request.method !== "POST") {
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: null,
+          error: { code: -32000, message: "Method not allowed: use POST for stateless MCP requests" },
+        }),
+        { status: 405, headers: { "content-type": "application/json", allow: "POST" } },
+      );
+    }
+
     // Stateless transport — each request is independent. Tool calls don't
     // need session state, so we accept the cold-start cost in exchange for
     // not needing Durable Objects (yet).
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
+      enableJsonResponse: true,
     });
     const server = buildWorkerServer();
-    await server.connect(transport);
 
     try {
+      await server.connect(transport);
       return await transport.handleRequest(request);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -162,6 +178,10 @@ export default {
         JSON.stringify({ error: "transport_failed", message }),
         { status: 500, headers: { "content-type": "application/json" } },
       );
+    } finally {
+      // JSON responses are complete before handleRequest resolves, so the
+      // per-request server can be closed without truncating a response.
+      await server.close();
     }
   },
 };
