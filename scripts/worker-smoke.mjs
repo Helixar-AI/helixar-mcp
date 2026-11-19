@@ -87,6 +87,16 @@ try {
   const target = await readFile(new URL("../examples/risky-manifest.json", import.meta.url), "utf8");
   const scan = await callTool("helixar_inspect_mcp", { target, mode: "deep", api_key: "smoke" });
   assert.ok(scan.findings.some(({ rule_id }) => rule_id === "S-004"));
+  assert.ok(scan.findings.every(({ refs }) => refs && Object.keys(refs).length));
+
+  const targets = [
+    { name: "account-data", tools: [{ name: "get_customer" }] },
+    { name: "web-content", tools: [{ name: "read_page" }] },
+    { name: "notifications", tools: [{ name: "send_notice" }] },
+  ].map((manifest) => JSON.stringify(manifest));
+  const composed = await callTool("helixar_inspect_mcp", { targets, mode: "deep", api_key: "smoke" });
+  assert.equal(composed.servers.length, targets.length);
+  assert.ok(composed.combined.findings.some(({ rule_id }) => rule_id === "T-002"));
 
   const chain = await callTool("helixar_hdp_validate", {
     chain: {

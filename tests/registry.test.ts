@@ -23,4 +23,11 @@ describe("registry", () => {
   it("matches the package version", () => {
     expect(SERVER_VERSION).toBe(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version);
   });
+  it("advertises exactly one target input and the multi-target bounds", () => {
+    const tool = toolsFor("worker").find(({ name }) => name === "helixar_inspect_mcp");
+    expect(tool?.inputSchema).toMatchObject({
+      oneOf: [{ required: ["target"] }, { required: ["targets"] }],
+      properties: { targets: { minItems: 2, maxItems: 10 } },
+    });
+  });
 });

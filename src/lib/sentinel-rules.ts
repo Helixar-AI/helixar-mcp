@@ -11,6 +11,7 @@
 // of helixar_inspect_mcp. SENTINEL_DEEP_RULES includes all 32 rules.
 
 import { z } from "zod";
+import { refsFor, type RuleRefs } from "./taxonomy.js";
 import { POISONING_RULES, PROMPT_INJECTION_PATTERNS } from "./poisoning.js";
 import { effectiveSchema } from "./manifest-schema-strings.js";
 export { effectiveSchema, walkStrings } from "./manifest-schema-strings.js";
@@ -89,7 +90,6 @@ export interface SentinelRule {
   id: string;
   title: string;
   source: string;
-  refs?: unknown;
   severity: Severity;
   category: SentinelCategory;
   description: string;
@@ -106,7 +106,7 @@ export interface RuleFinding {
   description: string;
   remediation: string;
   evidence?: string;
-  refs?: unknown;
+  refs?: RuleRefs;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -907,6 +907,7 @@ export function applyRules(manifest: MCPManifest, ruleSet: SentinelRule[]): Rule
     if (result.triggered) {
       findings.push({
         rule_id: rule.id,
+        refs: refsFor(rule.id),
         severity: result.severity ?? rule.severity,
         category: rule.category,
         description: rule.description,

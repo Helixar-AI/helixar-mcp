@@ -8,6 +8,7 @@ describe("catalog and review prompt", () => {
     const ids = catalogList().map(r => r.id);
     for (const rule of [...SENTINEL_QUICK_RULES, ...SENTINEL_DEEP_RULES]) expect(ids).toContain(rule.id);
     expect(catalogEntry("S-027").source).toBeTruthy();
+    for (const id of ["T-001", "T-002", "T-003"]) expect(catalogEntry(id)).toMatchObject({ mode: "deep", refs: expect.any(Object) });
     expect(() => catalogEntry("missing")).toThrow(expect.objectContaining({ code: -32002 }));
   });
   it("requires a target and keeps credentials out of the message", () => {

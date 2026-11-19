@@ -1,6 +1,6 @@
 {
   "name": "@helixar/mcp",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Helixar Security MCP server: scan MCP servers for security risks, validate and verify HDP delegation chains, audit releases.",
   "type": "module",
   "engines": {

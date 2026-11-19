@@ -2,11 +2,11 @@
 
 Agentic-AI security tools for Claude, exposed as a remote MCP server.
 
-> **Remote endpoint:** [`https://mcp.helixar.ai/mcp`](https://mcp.helixar.ai/mcp). Version 0.6.0 provides three tools over Streamable HTTP and four over local stdio.
+> **Remote endpoint:** [`https://mcp.helixar.ai/mcp`](https://mcp.helixar.ai/mcp). Version 0.7.0 provides three tools over Streamable HTTP and four over local stdio.
 
 | Tool | What it does |
 |---|---|
-| **`helixar_inspect_mcp`** | Scan an MCP server (URL or raw manifest JSON) against Sentinel detection rules. Returns a risk score, findings, and a security brief. Quick mode runs eight rules without a key. Deep mode runs all 32 rules, including tool poisoning, and requires an `api_key` argument. |
+| **`helixar_inspect_mcp`** | Scan one or more MCP server manifests. Returns risk scores, findings, and a security brief. Quick mode runs eight rules without a key. Deep mode adds tool-poisoning and composition checks and requires an `api_key` argument. |
 | **`helixar_hdp_validate`** | Validate an HDP delegation chain against IETF draft `draft-helixar-hdp-agentic-delegation-00`. Surfaces scope escalations, depth violations, expired hops, missing signatures. Every output cites the IETF draft + Zenodo DOI. |
 | **`helixar_hdp_verify`** | Verify an HDP token offline with the issuer’s base64url-encoded Ed25519 public key. Accepts a token object or JSON string and reports signature and chain integrity, the failing step, and the recording period. |
 | **`helixar_releaseguard`** | Wraps [`Helixar-AI/ReleaseGuard`](https://github.com/Helixar-AI/ReleaseGuard). Quick mode scans `dist/` / release artifacts for secrets, metadata leaks, license gaps. Deep mode runs the full `harden` pipeline (fix + obfuscate + sign + attest). Requires the `releaseguard` binary on `PATH`. |
@@ -27,7 +27,7 @@ npm start          # stdio MCP server
 1. Open Claude → Settings → **Connectors** → **Add custom connector**
 2. URL: `https://mcp.helixar.ai/mcp`
 3. Auth: **None** (v1 is publicly accessible; OAuth lands with Phase 8)
-4. Save and refresh. On version 0.6.0, `helixar_inspect_mcp`, `helixar_hdp_validate`, and `helixar_hdp_verify` appear in the tool picker.
+4. Save and refresh. `helixar_inspect_mcp`, `helixar_hdp_validate`, and `helixar_hdp_verify` appear in the tool picker.
 
 ### Option B — Anthropic API (`mcp_servers`)
 
@@ -120,6 +120,18 @@ Either prompt produces a CRIT-level finding (risk_score 100) flagging:
 | S-010 | high | "ignore previous instructions" + "unconditionally" — prompt-injection phrasing aimed at the calling model |
 | S-017 | medium | No `rate_limit` — saturation risk |
 
+### Scan servers together
+
+Pass `target` for a single manifest or `targets` for 2–10 manifests. Each entry is a manifest URL or an inline JSON string. A multi-server scan accepts up to three URL entries and returns each server’s results alongside a `combined` section. Quick mode reports each server’s Sentinel findings. In deep mode, composition checks flag tools that bring private data, untrusted input, and an outbound channel into the same agent environment.
+
+| ID | What it checks |
+|---|---|
+| T-001 | One server provides all three capabilities. |
+| T-002 | The capabilities are present only across multiple servers. |
+| T-003 | Multiple servers expose the same tool name. |
+
+Deep mode also checks whether a tool description directs the caller to use a tool from another scanned server (S-029). Findings and rule resources carry a `refs` object with applicable IDs from the [OWASP LLM Top 10](https://genai.owasp.org/llm-top-10/), [OWASP Agentic Top 10](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/), and [MITRE ATLAS 5.6.0](https://github.com/mitre-atlas/atlas-data/tree/v5.6.0).
+
 ## Architecture
 
 - **Language:** TypeScript ESM (Node 20.19+ for stdio and Node 22+ for Wrangler)
@@ -135,7 +147,7 @@ Either prompt produces a CRIT-level finding (risk_score 100) flagging:
 | Mode | How auth is signaled | Tools / scope | Purpose |
 |---|---|---|---|
 | Quick / public | no `api_key` in tool args | `inspect_mcp` (eight rules), `hdp_validate`, `hdp_verify`, `releaseguard check` (stdio only) | Initial scan and HDP checks |
-| Deep | non-empty `api_key` field in tool args | `inspect_mcp` (32 rules), `releaseguard fix/harden/sbom` (stdio only) | Additional Sentinel checks and ReleaseGuard actions |
+| Deep | non-empty `api_key` field in tool args | `inspect_mcp` (32 Sentinel rules plus composition checks), `releaseguard fix/harden/sbom` (stdio only) | Additional Sentinel checks and ReleaseGuard actions |
 
 The current deep-mode gate checks that `api_key` is non-empty. HDP verification checks record integrity independently of the recording period, and callers supply the issuer key they trust.
 
@@ -164,6 +176,9 @@ src/
 │   ├── sentinel-rules.ts     # Sentinel rule engine (8 quick, 32 deep)
 │   ├── poisoning.ts          # Tool-poisoning rules
 │   ├── catalog.ts            # Rule catalog resources
+│   ├── capabilities.ts       # Tool capability classification
+│   ├── trifecta.ts           # Single- and multi-server composition checks
+│   ├── taxonomy.ts           # OWASP and MITRE ATLAS references
 │   ├── hdp-schema.ts         # HDP chain types + 9 validation rules
 │   ├── releaseguard-runner.ts # CLI adapter for the releaseguard binary (stdio only)
 │   ├── url-classify.ts       # Pure IP classification (shared by both runtimes)

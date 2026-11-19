@@ -21,7 +21,7 @@ import { hdpValidate, HdpValidateInputSchema } from "./tools/hdp-validate.js";
 import { hdpVerify, HdpVerifyInputSchema } from "./tools/hdp-verify.js";
 import { inspectMcp, InspectMcpInputSchema } from "./tools/inspect-mcp.js";
 
-export const SERVER_VERSION = "0.6.0";
+export const SERVER_VERSION = "0.7.0";
 
 type Surface = "stdio" | "worker";
 type ToolArguments = Record<string, unknown>;
@@ -50,9 +50,9 @@ export const TOOLS: ToolEntry[] = [
     name: "helixar_inspect_mcp",
     title: "Scan MCP server",
     description:
-      "Scan an MCP server (URL or raw manifest JSON) against Helixar's Sentinel detection rules. " +
-      "Returns risk score, findings, and a Claude-generated security brief. Quick mode is free + " +
-      "authless (top 8 rules); deep mode runs all 32 rules with an api_key.",
+      "Scan MCP servers (URLs or raw manifest JSON) against Helixar's Sentinel detection rules. " +
+      "Returns risk scores, findings, and a security brief. Quick mode runs eight rules without " +
+      "a key. Deep mode runs all 32 Sentinel rules plus composition checks with an api_key.",
     inputSchema: InspectMcpInputSchema,
     annotations: { ...readOnly, openWorldHint: true },
     surfaces: ["stdio", "worker"],
@@ -109,7 +109,13 @@ const listedTools = TOOLS.map(({ surfaces, name, title, description, inputSchema
   surfaces,
   tool: {
     name, title, description, annotations,
-    inputSchema: zodToJsonSchema(inputSchema) as Tool["inputSchema"],
+    inputSchema: {
+      ...zodToJsonSchema(inputSchema) as Tool["inputSchema"],
+      // The Zod refinement checks the same constraint at dispatch time.
+      ...(inputSchema === InspectMcpInputSchema && {
+        oneOf: [{ required: ["target"] }, { required: ["targets"] }],
+      }),
+    },
   },
 }));
 

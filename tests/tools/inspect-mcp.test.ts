@@ -9,7 +9,7 @@ vi.mock("node:dns/promises", () => ({
   lookup: (...args: unknown[]) => mockLookup(...args),
 }));
 
-import { inspectMcp } from "../../src/tools/inspect-mcp.js";
+import { inspectMcp, InspectMcpInputSchema } from "../../src/tools/inspect-mcp.js";
 
 // Preserve + restore ANTHROPIC_API_KEY around every test so suites that
 // delete it (e.g. the "[fallback]" case) can't leak into sibling files.
@@ -317,5 +317,27 @@ describe("inspectMcp — deep mode", () => {
       api_key: "   ",
     });
     expect(out).toMatchObject({ error: "auth_required" });
+  });
+});
+
+describe("multi-target composition scans", () => {
+  const make = (name: string, tool: string) => JSON.stringify({ name, version: "1", tools: [{ name: tool, description: "" }] });
+  const targets = [make("data", "read_database"), make("web", "fetch_web"), make("out", "publish")];
+  it("enforces target selection and target limits", () => {
+    for (const value of [{}, { target: targets[0], targets }, { targets: [targets[0]] }, { targets: Array(11).fill(targets[0]) }, { targets: Array(4).fill("https://example.com") }]) {
+      expect(InspectMcpInputSchema.safeParse(value).success).toBe(false);
+    }
+  });
+  it("retains partial results and reports quick mode limitation", async () => {
+    const result = await inspectMcp({ targets: [targets[0]!, "bad"], mode: "quick" });
+    expect(result).toMatchObject({ servers: [{ label: "server[0]: data" }, { label: "server[1]", error: expect.any(String) }], combined: { findings: [], note: expect.stringContaining("deep mode") } });
+  });
+  it("finds cross-server composition in deep mode", async () => {
+    const result = await inspectMcp({ targets, mode: "deep", api_key: "key" });
+    expect(result).toMatchObject({ combined: { findings: expect.arrayContaining([expect.objectContaining({ rule_id: "T-002", refs: expect.any(Object) })]) } });
+  });
+  it("finds single-server composition in deep mode", async () => {
+    const result = await inspectMcp({ target: JSON.stringify({ name: "all", tools: [{ name: "read_database", description: "" }, { name: "fetch_web", description: "" }, { name: "publish", description: "" }] }), mode: "deep", api_key: "key" });
+    expect(result).toMatchObject({ findings: expect.arrayContaining([expect.objectContaining({ rule_id: "T-001" })]) });
   });
 });
