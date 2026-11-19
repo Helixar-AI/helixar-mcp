@@ -1,0 +1,89 @@
+{
+  "name": "memory",
+  "tools": [
+    {
+      "name": "create_entities",
+      "description": "Create entities in the knowledge graph.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "entities": {
+            "type": "array"
+          }
+        }
+      }
+    },
+    {
+      "name": "create_relations",
+      "description": "Create relations between entities.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "relations": {
+            "type": "array"
+          }
+        }
+      }
+    },
+    {
+      "name": "add_observations",
+      "description": "Add observations to existing entities.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "observations": {
+            "type": "array"
+          }
+        }
+      }
+    },
+    {
+      "name": "read_graph",
+      "description": "Read the knowledge graph.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "entityTypes": {
+            "type": "array"
+          },
+          "observationLimit": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "name": "search_nodes",
+      "description": "Search nodes by query.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "name": "open_nodes",
+      "description": "Retrieve nodes by name.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "names": {
+            "type": "array"
+          }
+        }
+      }
+    }
+  ],
+  "_source": "https://github.com/modelcontextprotocol/servers/blob/c799c8552b0f27b7a33a7b9233773da144dddcf5/src/memory/README.md",
+  "_license": "CC-BY-4.0",
+  "_reduced": true,
+  "_expected_findings": [],
+  "_notes": "Reduced, paraphrased tool descriptions and selected documented schema properties; not a captured tools/list response. Upstream documentation is CC-BY-4.0; its repository also describes an ongoing MIT-to-Apache-2.0 code license transition.",
+  "_license_source": "https://github.com/modelcontextprotocol/servers/blob/c799c8552b0f27b7a33a7b9233773da144dddcf5/LICENSE"
+}

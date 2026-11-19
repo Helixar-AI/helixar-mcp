@@ -2,12 +2,13 @@
 
 Agentic-AI security tools for Claude, exposed as a remote MCP server.
 
-> **Status:** Live at [`https://mcp.helixar.ai/mcp`](https://mcp.helixar.ai/mcp). Two tools available remotely (Streamable HTTP); a third runs locally over stdio. Public, no-auth in v1 — OAuth lands with Phase 8.
+> **Remote endpoint:** [`https://mcp.helixar.ai/mcp`](https://mcp.helixar.ai/mcp). Version 0.6.0 provides three tools over Streamable HTTP and four over local stdio.
 
 | Tool | What it does |
 |---|---|
-| **`helixar_inspect_mcp`** | Scan an MCP server (URL or raw manifest JSON) against Sentinel detection rules. Returns risk score, findings, and a Claude-generated security brief. Quick mode is free + authless (top 8 rules). Deep mode runs all 26 rules with an API key. |
+| **`helixar_inspect_mcp`** | Scan an MCP server (URL or raw manifest JSON) against Sentinel detection rules. Returns a risk score, findings, and a security brief. Quick mode runs eight rules without a key. Deep mode runs all 32 rules, including tool poisoning, and requires an `api_key` argument. |
 | **`helixar_hdp_validate`** | Validate an HDP delegation chain against IETF draft `draft-helixar-hdp-agentic-delegation-00`. Surfaces scope escalations, depth violations, expired hops, missing signatures. Every output cites the IETF draft + Zenodo DOI. |
+| **`helixar_hdp_verify`** | Verify an HDP token offline with the issuer’s base64url-encoded Ed25519 public key. Accepts a token object or JSON string and reports signature and chain integrity, the failing step, and the recording period. |
 | **`helixar_releaseguard`** | Wraps [`Helixar-AI/ReleaseGuard`](https://github.com/Helixar-AI/ReleaseGuard). Quick mode scans `dist/` / release artifacts for secrets, metadata leaks, license gaps. Deep mode runs the full `harden` pipeline (fix + obfuscate + sign + attest). Requires the `releaseguard` binary on `PATH`. |
 
 ## Quick start
@@ -26,7 +27,7 @@ npm start          # stdio MCP server
 1. Open Claude → Settings → **Connectors** → **Add custom connector**
 2. URL: `https://mcp.helixar.ai/mcp`
 3. Auth: **None** (v1 is publicly accessible; OAuth lands with Phase 8)
-4. Save and refresh — `helixar_inspect_mcp` and `helixar_hdp_validate` appear in the tool picker.
+4. Save and refresh. On version 0.6.0, `helixar_inspect_mcp`, `helixar_hdp_validate`, and `helixar_hdp_verify` appear in the tool picker.
 
 ### Option B — Anthropic API (`mcp_servers`)
 
@@ -49,9 +50,9 @@ curl https://api.anthropic.com/v1/messages \
   }'
 ```
 
-### Option C — Local stdio (all three tools)
+### Option C — Local stdio (all four tools)
 
-The Workers deployment exposes **two of three tools**. `helixar_releaseguard` shells out to a Go binary via `child_process` and has no Workers equivalent — it remains stdio-only. For the full set, run locally:
+The Worker exposes **three of four tools**. `helixar_releaseguard` runs locally over stdio and requires the Go binary on `PATH`. To use all four tools, run locally.
 
 ```bash
 git clone https://github.com/Helixar-AI/helixar-mcp && cd helixar-mcp
@@ -121,30 +122,48 @@ Either prompt produces a CRIT-level finding (risk_score 100) flagging:
 
 ## Architecture
 
-- **Language:** TypeScript ESM (Node 20+ for stdio; Node 22+ for Wrangler development and deployment)
+- **Language:** TypeScript ESM (Node 20.19+ for stdio and Node 22+ for Wrangler)
 - **MCP SDK:** `@modelcontextprotocol/sdk` (official Anthropic)
 - **Validation:** Zod for tool input schemas
 - **Narration:** Anthropic SDK with deterministic fallback when no API key is configured
 - **Remote hosting:** Cloudflare Workers (`src/worker.ts`), `WebStandardStreamableHTTPServerTransport`, stateless
-- **Local hosting:** Node 20+ stdio (`src/server.ts`)
+- **Local hosting:** Node stdio (`src/server.ts`)
 - **Auth:** v1 is open (deep mode requires an `api_key` field in the tool's input arguments). OAuth 2.0 + Dynamic Client Registration is Phase 8.
 
 ## Tool tiers
 
 | Mode | How auth is signaled | Tools / scope | Purpose |
 |---|---|---|---|
-| Quick / public | no `api_key` in tool args | `inspect_mcp` (top-8 rules), `hdp_validate`, `releaseguard check` (stdio only) | Maximum reach — zero-friction for community adoption |
-| Deep | non-empty `api_key` field in tool args | `inspect_mcp` deep mode (26 rules), `releaseguard fix/harden/sbom` (stdio only) | Pilot customers + paid tier (real key validation lands with Phase 8 OAuth) |
+| Quick / public | no `api_key` in tool args | `inspect_mcp` (eight rules), `hdp_validate`, `hdp_verify`, `releaseguard check` (stdio only) | Initial scan and HDP checks |
+| Deep | non-empty `api_key` field in tool args | `inspect_mcp` (32 rules), `releaseguard fix/harden/sbom` (stdio only) | Additional Sentinel checks and ReleaseGuard actions |
+
+The current deep-mode gate checks that `api_key` is non-empty. HDP verification checks record integrity independently of the recording period, and callers supply the issuer key they trust.
+
+## Resources and prompts
+
+- Read `helixar://rules` for the rule catalog or `helixar://rules/{id}` for a rule’s description, source, and remediation.
+- Use `review_mcp_server_before_install` with a `target` URL or manifest JSON. It requests a quick scan by default. Supplying `api_key` selects deep mode, and the client needs to pass that original argument to the tool call. The rendered prompt omits the key value.
+
+## Sources for S-027 to S-032
+
+- [Trail of Bits research on concealed instructions](https://blog.trailofbits.com/2025/07/28/we-built-the-security-layer-mcp-always-needed/)
+- [Invariant Labs tool poisoning and shadowing research](https://invariantlabs.ai/blog/mcp-security-notification-tool-poisoning-attacks)
+- [CyberArk research on poisoning in tool metadata](https://www.cyberark.com/resources/threat-research-blog/poison-everywhere-no-output-from-your-mcp-server-is-safe)
+- [MCP tool annotation guidance](https://blog.modelcontextprotocol.io/posts/2026-03-16-tool-annotations/)
 
 ## Repository layout
 
 ```
 src/
-├── server.ts                 # MCP stdio entrypoint (all 3 tools)
-├── worker.ts                 # Cloudflare Workers HTTP adapter (2 tools — see above)
+├── server.ts                 # MCP stdio entrypoint
+├── worker.ts                 # Cloudflare Workers HTTP adapter
+├── registry.ts               # Shared tool, resource, and prompt registrations
+├── prompts/                  # Pre-install review prompt
 ├── lib/
 │   ├── narrate.ts            # Anthropic call + deterministic fallback
-│   ├── sentinel-rules.ts     # 26 Sentinel detection rules (top-8 quick + 18 deep)
+│   ├── sentinel-rules.ts     # Sentinel rule engine (8 quick, 32 deep)
+│   ├── poisoning.ts          # Tool-poisoning rules
+│   ├── catalog.ts            # Rule catalog resources
 │   ├── hdp-schema.ts         # HDP chain types + 9 validation rules
 │   ├── releaseguard-runner.ts # CLI adapter for the releaseguard binary (stdio only)
 │   ├── url-classify.ts       # Pure IP classification (shared by both runtimes)
@@ -153,13 +172,17 @@ src/
 └── tools/
     ├── inspect-mcp.ts        # helixar_inspect_mcp implementation
     ├── hdp-validate.ts       # helixar_hdp_validate implementation
+    ├── hdp-verify.ts         # helixar_hdp_verify implementation
     └── releaseguard.ts       # helixar_releaseguard implementation (stdio only)
 tests/
 └── (mirrors src/)
+scripts/                     # Golden fixtures and Worker build checks
 wrangler.toml                 # Workers deploy config (mcp.helixar.ai)
 ```
 
 ## IP protection
+
+Rules come only from this repository and from the public sources listed.
 
 Per the implementation plan §6, internal detection methodology, Hunch Mode internals, sensor implementation, and exact thresholds are **never** exposed in this codebase. Public surface is rule IDs, severity buckets, public-safe detection categories, and remediation guidance only. The earlier `helixar_triage_alert` tool was revoked in `v0.4.1` after review flagged that exposing kill-chain stage classifiers — even stripped — widened the public attack surface too far; `helixar_releaseguard` (wrapping the already-open-source Helixar-AI/ReleaseGuard) replaces it.
 

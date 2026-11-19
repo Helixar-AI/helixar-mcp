@@ -18,7 +18,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: "npm"
 
       - name: Install
@@ -32,3 +32,9 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Check Worker bundle
+        run: npm run check:worker-bundle
+
+      - name: Smoke-test Worker
+        run: npm run test:worker

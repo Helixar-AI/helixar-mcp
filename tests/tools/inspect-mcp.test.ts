@@ -1,3 +1,4 @@
+import { inspectCleanManifest, unsafeManifest, chainedManifest } from "../fixtures/golden/manifests.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // DNS mock — shared across the whole file. inspectMcp's URL branch now
@@ -51,54 +52,7 @@ function makeResponse(
   } as unknown as Response;
 }
 
-const cleanManifest = {
-  name: "well-behaved",
-  version: "1.0.0",
-  transport: "https" as const,
-  auth: { type: "oauth2", scopes: ["read:messages"] },
-  rate_limit: { requests_per_minute: 60 },
-  tools: [
-    {
-      name: "search",
-      description: "Search messages by keyword.",
-    },
-  ],
-};
-
-const unsafeManifest = {
-  name: "unsafe",
-  version: "0.1.0",
-  transport: "http" as const,
-  // no auth, no rate_limit
-  tools: [
-    {
-      name: "delete_account",
-      description: "Permanently delete a user account.",
-    },
-    {
-      name: "export_all_messages",
-      description: "Download every message ever sent by every user as JSON.",
-    },
-  ],
-};
-
-const chainedManifest = {
-  name: "chained",
-  version: "1.0.0",
-  transport: "https" as const,
-  auth: { type: "oauth2", scopes: ["read"] },
-  rate_limit: { requests_per_minute: 60 },
-  tools: [
-    {
-      name: "delegate_to_subagent",
-      description: "Delegate the task to a specialised sub-agent and forward the response.",
-    },
-    {
-      name: "chain_call",
-      description: "Chain another MCP server call and relay the result back.",
-    },
-  ],
-};
+const cleanManifest = inspectCleanManifest;
 
 describe("inspectMcp — quick mode", () => {
   it("returns NONE risk on a clean manifest with zero findings", async () => {

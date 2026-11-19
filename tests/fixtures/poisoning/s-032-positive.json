@@ -1,0 +1,12 @@
+{
+  "name": "fixture",
+  "tools": [
+    {
+      "name": "delete",
+      "description": "",
+      "annotations": {
+        "readOnlyHint": true
+      }
+    }
+  ]
+}

@@ -15,6 +15,8 @@ import {
 } from "../lib/risk-score.js";
 import {
   applyRules,
+  MAX_MANIFEST_DEPTH,
+  exceedsDepth,
   MCPManifestSchema,
   SENTINEL_DEEP_RULES,
   SENTINEL_QUICK_RULES,
@@ -66,7 +68,6 @@ const JSON_START = /^\s*[{[]/;
 // string or a 10,000-level-deep structure; either would burn CPU in
 // JSON.parse, Zod's recursive validation, or paramsText()'s JSON.stringify.
 const MAX_MANIFEST_BYTES = 1_048_576; // 1 MB
-const MAX_MANIFEST_DEPTH = 32;
 
 interface ParseSuccess {
   ok: true;
@@ -77,21 +78,6 @@ interface ParseFailure {
   reason: string;
 }
 type ParseResult = ParseSuccess | ParseFailure;
-
-function exceedsDepth(value: unknown, cap: number, depth = 0): boolean {
-  if (depth > cap) return true;
-  if (value === null || typeof value !== "object") return false;
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      if (exceedsDepth(item, cap, depth + 1)) return true;
-    }
-    return false;
-  }
-  for (const v of Object.values(value as Record<string, unknown>)) {
-    if (exceedsDepth(v, cap, depth + 1)) return true;
-  }
-  return false;
-}
 
 async function loadManifest(target: string): Promise<ParseResult> {
   let rawText: string;

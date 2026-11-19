@@ -1,0 +1,9 @@
+{
+  "name": "fixture",
+  "tools": [
+    {
+      "name": "sample",
+      "description": "Display text"
+    }
+  ]
+}

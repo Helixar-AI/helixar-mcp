@@ -1,13 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { TOOL_DESCRIPTORS, buildServer, dispatchTool } from "../src/server.js";
+import { buildServer } from "../src/server.js";
+import { toolsFor, dispatch } from "../src/registry.js";
+const TOOL_DESCRIPTORS = toolsFor("stdio");
+async function dispatchTool(name: string, args: Record<string, unknown>) {
+  const response = await dispatch(name, args, "stdio");
+  return JSON.parse(response.content[0]!.text);
+}
 
 describe("MCP tool registry", () => {
-  it("registers the three shippable tools", () => {
+  it("registers the four shippable tools", () => {
     const names = TOOL_DESCRIPTORS.map((t) => t.name).sort();
     expect(names).toEqual([
       "helixar_hdp_validate",
+      "helixar_hdp_verify",
       "helixar_inspect_mcp",
       "helixar_releaseguard",
     ]);
@@ -56,7 +63,7 @@ describe("dispatchTool", () => {
   });
 
   it("returns a structured error for an unknown tool", async () => {
-    await expect(dispatchTool("not_a_real_tool", {})).rejects.toThrow(/unknown tool/i);
+    expect(await dispatchTool("not_a_real_tool", {})).toMatchObject({ error: "tool_failed", message: expect.stringMatching(/unknown tool/i) });
   });
 });
 
@@ -89,12 +96,23 @@ async function withConnectedClient<T>(
 }
 
 describe("MCP Server handlers (in-process transport)", () => {
-  it("responds to tools/list with the three Helixar tool descriptors", async () => {
+  it("lists and reads resources, templates, and prompts", async () => {
+    await withConnectedClient(async client => {
+      expect((await client.listResources()).resources.map(r => r.uri)).toContain("helixar://rules");
+      expect((await client.listResourceTemplates()).resourceTemplates.map(r => r.uriTemplate)).toContain("helixar://rules/{id}");
+      expect(JSON.parse((await client.readResource({ uri: "helixar://rules/S-001" })).contents[0]!.text as string).id).toBe("S-001");
+      expect((await client.listPrompts()).prompts.map(p => p.name)).toContain("review_mcp_server_before_install");
+      expect((await client.getPrompt({ name: "review_mcp_server_before_install", arguments: { target: "example" } })).messages).toHaveLength(1);
+    });
+  });
+
+  it("responds to tools/list with the four Helixar tool descriptors", async () => {
     await withConnectedClient(async (client) => {
       const res = await client.listTools();
       const names = res.tools.map((t) => t.name).sort();
       expect(names).toEqual([
         "helixar_hdp_validate",
+      "helixar_hdp_verify",
         "helixar_inspect_mcp",
         "helixar_releaseguard",
       ]);

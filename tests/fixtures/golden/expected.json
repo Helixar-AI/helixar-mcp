@@ -1,0 +1,259 @@
+{
+  "ruleCleanManifest": {
+    "quick": [],
+    "deep": []
+  },
+  "inspectCleanManifest": {
+    "quick": [],
+    "deep": []
+  },
+  "unsafeManifest": {
+    "quick": [
+      {
+        "rule_id": "S-001",
+        "severity": "critical",
+        "category": "authentication",
+        "description": "Server exposes tools with no authentication declared. Any caller — including unrelated agents — can invoke every tool.",
+        "remediation": "Declare an auth block (api_key, oauth2, or mtls) and refuse unauthenticated requests at the transport layer.",
+        "evidence": "manifest.auth missing or empty"
+      },
+      {
+        "rule_id": "S-003",
+        "severity": "high",
+        "category": "authentication",
+        "description": "Server transport is plain HTTP. Bearer tokens and tool payloads are exposed on the wire to any party between caller and server.",
+        "remediation": "Move the listener behind TLS (HTTPS or HTTPS-fronted reverse proxy). Reject plaintext upgrades.",
+        "evidence": "transport=http"
+      },
+      {
+        "rule_id": "S-004",
+        "severity": "high",
+        "category": "authorization",
+        "description": "A destructive tool (delete / drop / purge / wipe) is invokable without an explicit confirmation flag.",
+        "remediation": "Require a typed confirmation parameter (e.g. confirm_token: 'DELETE') and validate server-side before executing.",
+        "evidence": "1 destructive tool(s) without confirmation: delete_account"
+      },
+      {
+        "rule_id": "S-007",
+        "severity": "high",
+        "category": "data_exfiltration",
+        "description": "An export-style tool returns an unbounded set of records (no row cap, no time window).",
+        "remediation": "Cap export tools to a maximum row count and require a time window. Prefer paginated retrieval for large data sets.",
+        "evidence": "unbounded export tool(s): export_all_messages"
+      },
+      {
+        "rule_id": "S-017",
+        "severity": "medium",
+        "category": "behavioral",
+        "description": "No rate limiting is declared. A misbehaving or rogue caller can saturate the server, exhausting upstream provider quotas.",
+        "remediation": "Declare per-principal request budgets at the manifest layer and enforce them at the transport.",
+        "evidence": "manifest.rate_limit missing"
+      }
+    ],
+    "deep": [
+      {
+        "rule_id": "S-001",
+        "severity": "critical",
+        "category": "authentication",
+        "description": "Server exposes tools with no authentication declared. Any caller — including unrelated agents — can invoke every tool.",
+        "remediation": "Declare an auth block (api_key, oauth2, or mtls) and refuse unauthenticated requests at the transport layer.",
+        "evidence": "manifest.auth missing or empty"
+      },
+      {
+        "rule_id": "S-003",
+        "severity": "high",
+        "category": "authentication",
+        "description": "Server transport is plain HTTP. Bearer tokens and tool payloads are exposed on the wire to any party between caller and server.",
+        "remediation": "Move the listener behind TLS (HTTPS or HTTPS-fronted reverse proxy). Reject plaintext upgrades.",
+        "evidence": "transport=http"
+      },
+      {
+        "rule_id": "S-004",
+        "severity": "high",
+        "category": "authorization",
+        "description": "A destructive tool (delete / drop / purge / wipe) is invokable without an explicit confirmation flag.",
+        "remediation": "Require a typed confirmation parameter (e.g. confirm_token: 'DELETE') and validate server-side before executing.",
+        "evidence": "1 destructive tool(s) without confirmation: delete_account"
+      },
+      {
+        "rule_id": "S-007",
+        "severity": "high",
+        "category": "data_exfiltration",
+        "description": "An export-style tool returns an unbounded set of records (no row cap, no time window).",
+        "remediation": "Cap export tools to a maximum row count and require a time window. Prefer paginated retrieval for large data sets.",
+        "evidence": "unbounded export tool(s): export_all_messages"
+      },
+      {
+        "rule_id": "S-017",
+        "severity": "medium",
+        "category": "behavioral",
+        "description": "No rate limiting is declared. A misbehaving or rogue caller can saturate the server, exhausting upstream provider quotas.",
+        "remediation": "Declare per-principal request budgets at the manifest layer and enforce them at the transport.",
+        "evidence": "manifest.rate_limit missing"
+      },
+      {
+        "rule_id": "S-024",
+        "severity": "medium",
+        "category": "behavioral",
+        "description": "Manifest version is pre-1.0 (`0.x`). The tool surface is not contractually stable and callers cannot pin confidently.",
+        "remediation": "Cut a 1.0 release once the tool surface stabilises. Use semver to signal breaking changes.",
+        "evidence": "version=0.1.0"
+      },
+      {
+        "rule_id": "S-025",
+        "severity": "low",
+        "category": "supply_chain",
+        "description": "The manifest name has no publisher/vendor namespace. Authorship and trust attribution are ambiguous.",
+        "remediation": "Namespace the server name (e.g. `helixar/inspector`). Publish under a verified vendor identity.",
+        "evidence": "manifest name \"unsafe\" has no namespace"
+      }
+    ]
+  },
+  "chainedManifest": {
+    "quick": [],
+    "deep": [
+      {
+        "rule_id": "S-021",
+        "severity": "medium",
+        "category": "authorization",
+        "description": "OAuth scopes are coarse-grained — the declared scopes do not separate read from write. One scope grants every capability.",
+        "remediation": "Split scopes by verb and object (e.g. `read:messages`, `write:messages`). Assign the narrowest verb a tool can tolerate.",
+        "evidence": "coarse scope(s): read"
+      },
+      {
+        "rule_id": "S-025",
+        "severity": "low",
+        "category": "supply_chain",
+        "description": "The manifest name has no publisher/vendor namespace. Authorship and trust attribution are ambiguous.",
+        "remediation": "Namespace the server name (e.g. `helixar/inspector`). Publish under a verified vendor identity.",
+        "evidence": "manifest name \"chained\" has no namespace"
+      }
+    ]
+  },
+  "riskyManifest": {
+    "quick": [
+      {
+        "rule_id": "S-001",
+        "severity": "critical",
+        "category": "authentication",
+        "description": "Server exposes tools with no authentication declared. Any caller — including unrelated agents — can invoke every tool.",
+        "remediation": "Declare an auth block (api_key, oauth2, or mtls) and refuse unauthenticated requests at the transport layer.",
+        "evidence": "manifest.auth missing or empty"
+      },
+      {
+        "rule_id": "S-003",
+        "severity": "high",
+        "category": "authentication",
+        "description": "Server transport is plain HTTP. Bearer tokens and tool payloads are exposed on the wire to any party between caller and server.",
+        "remediation": "Move the listener behind TLS (HTTPS or HTTPS-fronted reverse proxy). Reject plaintext upgrades.",
+        "evidence": "transport=http"
+      },
+      {
+        "rule_id": "S-004",
+        "severity": "high",
+        "category": "authorization",
+        "description": "A destructive tool (delete / drop / purge / wipe) is invokable without an explicit confirmation flag.",
+        "remediation": "Require a typed confirmation parameter (e.g. confirm_token: 'DELETE') and validate server-side before executing.",
+        "evidence": "1 destructive tool(s) without confirmation: delete_repository"
+      },
+      {
+        "rule_id": "S-007",
+        "severity": "high",
+        "category": "data_exfiltration",
+        "description": "An export-style tool returns an unbounded set of records (no row cap, no time window).",
+        "remediation": "Cap export tools to a maximum row count and require a time window. Prefer paginated retrieval for large data sets.",
+        "evidence": "unbounded export tool(s): export_all_users"
+      },
+      {
+        "rule_id": "S-008",
+        "severity": "high",
+        "category": "data_exfiltration",
+        "description": "A tool surfaces personally-identifiable information by name (SSN, DOB, full address, card numbers).",
+        "remediation": "Filter PII at the tool boundary. Return tokenised or redacted views; serve raw PII only behind a stricter scope.",
+        "evidence": "PII keywords surfaced: ssn, date_of_birth, credit_card, address"
+      },
+      {
+        "rule_id": "S-010",
+        "severity": "high",
+        "category": "injection",
+        "description": "A tool description contains prompt-injection phrasing aimed at the calling model (e.g. 'ignore previous instructions').",
+        "remediation": "Strip or sanitise tool descriptions before they reach the model. Reject manifests whose descriptions look like instructions.",
+        "evidence": "injection-shaped phrase(s): ignore previous instructions | unconditionally"
+      },
+      {
+        "rule_id": "S-017",
+        "severity": "medium",
+        "category": "behavioral",
+        "description": "No rate limiting is declared. A misbehaving or rogue caller can saturate the server, exhausting upstream provider quotas.",
+        "remediation": "Declare per-principal request budgets at the manifest layer and enforce them at the transport.",
+        "evidence": "manifest.rate_limit missing"
+      }
+    ],
+    "deep": [
+      {
+        "rule_id": "S-001",
+        "severity": "critical",
+        "category": "authentication",
+        "description": "Server exposes tools with no authentication declared. Any caller — including unrelated agents — can invoke every tool.",
+        "remediation": "Declare an auth block (api_key, oauth2, or mtls) and refuse unauthenticated requests at the transport layer.",
+        "evidence": "manifest.auth missing or empty"
+      },
+      {
+        "rule_id": "S-003",
+        "severity": "high",
+        "category": "authentication",
+        "description": "Server transport is plain HTTP. Bearer tokens and tool payloads are exposed on the wire to any party between caller and server.",
+        "remediation": "Move the listener behind TLS (HTTPS or HTTPS-fronted reverse proxy). Reject plaintext upgrades.",
+        "evidence": "transport=http"
+      },
+      {
+        "rule_id": "S-004",
+        "severity": "high",
+        "category": "authorization",
+        "description": "A destructive tool (delete / drop / purge / wipe) is invokable without an explicit confirmation flag.",
+        "remediation": "Require a typed confirmation parameter (e.g. confirm_token: 'DELETE') and validate server-side before executing.",
+        "evidence": "1 destructive tool(s) without confirmation: delete_repository"
+      },
+      {
+        "rule_id": "S-007",
+        "severity": "high",
+        "category": "data_exfiltration",
+        "description": "An export-style tool returns an unbounded set of records (no row cap, no time window).",
+        "remediation": "Cap export tools to a maximum row count and require a time window. Prefer paginated retrieval for large data sets.",
+        "evidence": "unbounded export tool(s): export_all_users"
+      },
+      {
+        "rule_id": "S-008",
+        "severity": "high",
+        "category": "data_exfiltration",
+        "description": "A tool surfaces personally-identifiable information by name (SSN, DOB, full address, card numbers).",
+        "remediation": "Filter PII at the tool boundary. Return tokenised or redacted views; serve raw PII only behind a stricter scope.",
+        "evidence": "PII keywords surfaced: ssn, date_of_birth, credit_card, address"
+      },
+      {
+        "rule_id": "S-010",
+        "severity": "high",
+        "category": "injection",
+        "description": "A tool description contains prompt-injection phrasing aimed at the calling model (e.g. 'ignore previous instructions').",
+        "remediation": "Strip or sanitise tool descriptions before they reach the model. Reject manifests whose descriptions look like instructions.",
+        "evidence": "injection-shaped phrase(s): ignore previous instructions | unconditionally"
+      },
+      {
+        "rule_id": "S-017",
+        "severity": "medium",
+        "category": "behavioral",
+        "description": "No rate limiting is declared. A misbehaving or rogue caller can saturate the server, exhausting upstream provider quotas.",
+        "remediation": "Declare per-principal request budgets at the manifest layer and enforce them at the transport.",
+        "evidence": "manifest.rate_limit missing"
+      },
+      {
+        "rule_id": "S-016",
+        "severity": "medium",
+        "category": "supply_chain",
+        "description": "A tool fetches arbitrary external URLs supplied by the caller. The server becomes a confused-deputy proxy to anywhere on the internet (SSRF).",
+        "remediation": "Constrain outbound URLs to a documented allowlist. Reject private ranges and metadata endpoints at the server.",
+        "evidence": "arbitrary-fetch phrase(s): any url"
+      }
+    ]
+  }
+}

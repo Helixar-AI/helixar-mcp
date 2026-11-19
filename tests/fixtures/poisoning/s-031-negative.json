@@ -1,0 +1,16 @@
+{
+  "name": "fixture",
+  "tools": [
+    {
+      "name": "sample",
+      "description": "",
+      "inputSchema": {
+        "properties": {
+          "note": {
+            "description": "A note"
+          }
+        }
+      }
+    }
+  ]
+}

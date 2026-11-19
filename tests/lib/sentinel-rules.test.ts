@@ -1,6 +1,9 @@
+import { ruleCleanManifest } from "../fixtures/golden/manifests.js";
 import { describe, expect, it } from "vitest";
 import {
   applyRules,
+  MCPManifestSchema,
+
   SENTINEL_DEEP_RULES,
   SENTINEL_QUICK_RULES,
   type MCPManifest,
@@ -10,20 +13,7 @@ import {
 // Reusable manifest fixtures. Each rule below has a "clean" and a
 // "triggering" variant — small, deliberate, and traceable.
 
-const cleanManifest: MCPManifest = {
-  name: "well-behaved-mcp",
-  version: "1.0.0",
-  transport: "https",
-  auth: { type: "oauth2", scopes: ["read:messages"] },
-  rate_limit: { requests_per_minute: 60 },
-  tools: [
-    {
-      name: "search_inbox",
-      description: "Search the user's inbox by keyword.",
-      parameters: { type: "object", properties: { query: { type: "string" } } },
-    },
-  ],
-};
+const cleanManifest = ruleCleanManifest;
 
 function withOverrides(base: MCPManifest, patch: Partial<MCPManifest>): MCPManifest {
   return { ...base, ...patch };
@@ -202,7 +192,7 @@ describe("applyRules — multiple findings", () => {
 
 describe("SENTINEL_DEEP_RULES", () => {
   it("contains exactly 26 rules (8 quick + 18 deep)", () => {
-    expect(SENTINEL_DEEP_RULES).toHaveLength(26);
+    expect(SENTINEL_DEEP_RULES).toHaveLength(32);
   });
 
   it("includes every quick rule by ID", () => {
@@ -622,4 +612,9 @@ describe("deep rules — false-positive guards", () => {
     };
     expect(runOnly("S-026", m).length).toBe(0);
   });
+});
+
+it("detects SQL in inputSchema", () => {
+  const m = MCPManifestSchema.parse({ name: "test", tools: [{ name: "query", inputSchema: { properties: { sql: { type: "string" } } } }] });
+  expect(runOnly("S-011", m)).toHaveLength(1);
 });

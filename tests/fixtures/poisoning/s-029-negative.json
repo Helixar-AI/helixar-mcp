@@ -1,0 +1,13 @@
+{
+  "name": "fixture",
+  "tools": [
+    {
+      "name": "sample",
+      "description": "This complements other_tool"
+    },
+    {
+      "name": "other_tool",
+      "description": "A tool"
+    }
+  ]
+}

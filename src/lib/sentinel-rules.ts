@@ -8,19 +8,36 @@
 //   - Each rule is a self-contained pure function.
 //
 // SENTINEL_QUICK_RULES is the top-8 set used by the authless quick mode
-// of helixar_inspect_mcp. SENTINEL_DEEP_RULES is the full 26-rule set
-// (8 quick + 18 deep) used by the authenticated deep mode.
+// of helixar_inspect_mcp. SENTINEL_DEEP_RULES includes all 32 rules.
 
 import { z } from "zod";
+import { POISONING_RULES, PROMPT_INJECTION_PATTERNS } from "./poisoning.js";
+import { effectiveSchema } from "./manifest-schema-strings.js";
+export { effectiveSchema, walkStrings } from "./manifest-schema-strings.js";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Manifest shape
 // ───────────────────────────────────────────────────────────────────────────
 
+export const MAX_MANIFEST_DEPTH = 32;
+export function exceedsDepth(value: unknown, cap: number, depth = 0): boolean {
+  if (depth > cap) return true;
+  if (value === null || typeof value !== "object") return false;
+  return Object.values(value).some((v) => exceedsDepth(v, cap, depth + 1));
+}
+
 export const MCPToolSchema = z.object({
   name: z.string(),
   description: z.string().default(""),
   parameters: z.unknown().optional(),
+  inputSchema: z.unknown().optional(),
+  annotations: z.object({
+    title: z.string().optional(),
+    readOnlyHint: z.boolean().optional(),
+    destructiveHint: z.boolean().optional(),
+    idempotentHint: z.boolean().optional(),
+    openWorldHint: z.boolean().optional(),
+  }).optional(),
   destructive: z.boolean().optional(),
   requires_confirmation: z.boolean().optional(),
 });
@@ -59,15 +76,20 @@ export type SentinelCategory =
   | "data_exfiltration"
   | "injection"
   | "supply_chain"
-  | "behavioral";
+  | "behavioral"
+  | "composition";
 
 export interface RuleCheckResult {
   triggered: boolean;
   evidence?: string;
+  severity?: Severity;
 }
 
 export interface SentinelRule {
   id: string;
+  title: string;
+  source: string;
+  refs?: unknown;
   severity: Severity;
   category: SentinelCategory;
   description: string;
@@ -84,6 +106,7 @@ export interface RuleFinding {
   description: string;
   remediation: string;
   evidence?: string;
+  refs?: unknown;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -132,22 +155,14 @@ const PII_KEYWORDS = [
   "phone_number",
 ];
 
-const PROMPT_INJECTION_PATTERNS = [
-  "ignore all previous instructions",
-  "ignore previous instructions",
-  "disregard the above",
-  "override the system prompt",
-  "you must always",
-  "without confirmation",
-  "unconditionally",
-];
-
 // ───────────────────────────────────────────────────────────────────────────
 // The 8 quick-mode rules
 // ───────────────────────────────────────────────────────────────────────────
 
 const S_001: SentinelRule = {
   id: "S-001",
+  title: "Missing authentication",
+  source: "helixar-mcp Sentinel",
   severity: "critical",
   category: "authentication",
   mode: "quick",
@@ -163,6 +178,8 @@ const S_001: SentinelRule = {
 
 const S_002: SentinelRule = {
   id: "S-002",
+  title: "Broad OAuth scopes",
+  source: "helixar-mcp Sentinel",
   severity: "high",
   category: "authentication",
   mode: "quick",
@@ -181,6 +198,8 @@ const S_002: SentinelRule = {
 
 const S_003: SentinelRule = {
   id: "S-003",
+  title: "Plaintext transport",
+  source: "helixar-mcp Sentinel",
   severity: "high",
   category: "authentication",
   mode: "quick",
@@ -196,6 +215,8 @@ const S_003: SentinelRule = {
 
 const S_004: SentinelRule = {
   id: "S-004",
+  title: "Unconfirmed destructive tools",
+  source: "helixar-mcp Sentinel",
   severity: "high",
   category: "authorization",
   mode: "quick",
@@ -220,6 +241,8 @@ const S_004: SentinelRule = {
 
 const S_007: SentinelRule = {
   id: "S-007",
+  title: "Unbounded data exports",
+  source: "helixar-mcp Sentinel",
   severity: "high",
   category: "data_exfiltration",
   mode: "quick",
@@ -240,6 +263,8 @@ const S_007: SentinelRule = {
 
 const S_008: SentinelRule = {
   id: "S-008",
+  title: "Sensitive personal information",
+  source: "helixar-mcp Sentinel",
   severity: "high",
   category: "data_exfiltration",
   mode: "quick",
@@ -258,6 +283,8 @@ const S_008: SentinelRule = {
 
 const S_010: SentinelRule = {
   id: "S-010",
+  title: "Prompt injection phrases",
+  source: "helixar-mcp Sentinel",
   severity: "high",
   category: "injection",
   mode: "quick",
@@ -276,6 +303,8 @@ const S_010: SentinelRule = {
 
 const S_017: SentinelRule = {
   id: "S-017",
+  title: "Missing rate limiting",
+  source: "helixar-mcp Sentinel",
   severity: "medium",
   category: "behavioral",
   mode: "quick",
@@ -308,9 +337,10 @@ export const SENTINEL_QUICK_RULES: SentinelRule[] = [
 // ───────────────────────────────────────────────────────────────────────────
 
 function paramsText(tool: MCPTool): string {
-  if (tool.parameters === undefined || tool.parameters === null) return "";
+  const schema = effectiveSchema(tool);
+  if (schema == null) return "";
   try {
-    return JSON.stringify(tool.parameters).toLowerCase();
+    return JSON.stringify(schema).toLowerCase();
   } catch {
     return "";
   }
@@ -448,6 +478,8 @@ const CREDENTIAL_RETURN_PATTERNS: RegExp[] = [
 
 const S_005: SentinelRule = {
   id: "S-005",
+  title: "Credentials in query strings",
+  source: "helixar-mcp Sentinel",
   severity: "high",
   category: "authentication",
   mode: "deep",
@@ -466,6 +498,8 @@ const S_005: SentinelRule = {
 
 const S_006: SentinelRule = {
   id: "S-006",
+  title: "Mixed authentication surface",
+  source: "helixar-mcp Sentinel",
   severity: "high",
   category: "authentication",
   mode: "deep",
@@ -484,6 +518,8 @@ const S_006: SentinelRule = {
 
 const S_009: SentinelRule = {
   id: "S-009",
+  title: "Missing list pagination",
+  source: "helixar-mcp Sentinel",
   severity: "medium",
   category: "data_exfiltration",
   mode: "deep",
@@ -511,6 +547,8 @@ const S_009: SentinelRule = {
 
 const S_011: SentinelRule = {
   id: "S-011",
+  title: "SQL or shell input",
+  source: "helixar-mcp Sentinel",
   severity: "high",
   category: "injection",
   mode: "deep",
@@ -534,6 +572,8 @@ const S_011: SentinelRule = {
 
 const S_012: SentinelRule = {
   id: "S-012",
+  title: "Unescaped rendered content",
+  source: "helixar-mcp Sentinel",
   severity: "medium",
   category: "injection",
   mode: "deep",
@@ -552,6 +592,8 @@ const S_012: SentinelRule = {
 
 const S_013: SentinelRule = {
   id: "S-013",
+  title: "Unpinned dependencies",
+  source: "helixar-mcp Sentinel",
   severity: "high",
   category: "supply_chain",
   mode: "deep",
@@ -570,6 +612,8 @@ const S_013: SentinelRule = {
 
 const S_014: SentinelRule = {
   id: "S-014",
+  title: "Development endpoint references",
+  source: "helixar-mcp Sentinel",
   severity: "medium",
   category: "supply_chain",
   mode: "deep",
@@ -588,6 +632,8 @@ const S_014: SentinelRule = {
 
 const S_015: SentinelRule = {
   id: "S-015",
+  title: "Code execution capabilities",
+  source: "helixar-mcp Sentinel",
   severity: "critical",
   category: "injection",
   mode: "deep",
@@ -606,6 +652,8 @@ const S_015: SentinelRule = {
 
 const S_016: SentinelRule = {
   id: "S-016",
+  title: "Remote URL fetching",
+  source: "helixar-mcp Sentinel",
   severity: "medium",
   category: "supply_chain",
   mode: "deep",
@@ -624,6 +672,8 @@ const S_016: SentinelRule = {
 
 const S_018: SentinelRule = {
   id: "S-018",
+  title: "Oversized tool surface",
+  source: "helixar-mcp Sentinel",
   severity: "medium",
   category: "behavioral",
   mode: "deep",
@@ -640,6 +690,8 @@ const S_018: SentinelRule = {
 
 const S_019: SentinelRule = {
   id: "S-019",
+  title: "Trivial tool descriptions",
+  source: "helixar-mcp Sentinel",
   severity: "low",
   category: "behavioral",
   mode: "deep",
@@ -660,6 +712,8 @@ const S_019: SentinelRule = {
 
 const S_020: SentinelRule = {
   id: "S-020",
+  title: "Unrestricted privileged tools",
+  source: "helixar-mcp Sentinel",
   severity: "high",
   category: "authorization",
   mode: "deep",
@@ -686,6 +740,8 @@ const S_020: SentinelRule = {
 
 const S_021: SentinelRule = {
   id: "S-021",
+  title: "Coarse OAuth scopes",
+  source: "helixar-mcp Sentinel",
   severity: "medium",
   category: "authorization",
   mode: "deep",
@@ -708,6 +764,8 @@ const S_021: SentinelRule = {
 
 const S_022: SentinelRule = {
   id: "S-022",
+  title: "Webhook exfiltration surface",
+  source: "helixar-mcp Sentinel",
   severity: "medium",
   category: "data_exfiltration",
   mode: "deep",
@@ -726,6 +784,8 @@ const S_022: SentinelRule = {
 
 const S_023: SentinelRule = {
   id: "S-023",
+  title: "Filesystem access surface",
+  source: "helixar-mcp Sentinel",
   severity: "high",
   category: "authorization",
   mode: "deep",
@@ -752,6 +812,8 @@ const S_023: SentinelRule = {
 
 const S_024: SentinelRule = {
   id: "S-024",
+  title: "Pre-release manifest version",
+  source: "helixar-mcp Sentinel",
   severity: "medium",
   category: "behavioral",
   mode: "deep",
@@ -768,6 +830,8 @@ const S_024: SentinelRule = {
 
 const S_025: SentinelRule = {
   id: "S-025",
+  title: "Missing publisher namespace",
+  source: "helixar-mcp Sentinel",
   severity: "low",
   category: "supply_chain",
   mode: "deep",
@@ -786,6 +850,8 @@ const S_025: SentinelRule = {
 
 const S_026: SentinelRule = {
   id: "S-026",
+  title: "Credential material in output",
+  source: "helixar-mcp Sentinel",
   severity: "high",
   category: "data_exfiltration",
   mode: "deep",
@@ -827,6 +893,7 @@ export const SENTINEL_DEEP_RULES: SentinelRule[] = [
   S_024,
   S_025,
   S_026,
+  ...POISONING_RULES,
 ];
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -840,7 +907,7 @@ export function applyRules(manifest: MCPManifest, ruleSet: SentinelRule[]): Rule
     if (result.triggered) {
       findings.push({
         rule_id: rule.id,
-        severity: rule.severity,
+        severity: result.severity ?? rule.severity,
         category: rule.category,
         description: rule.description,
         remediation: rule.remediation,
