@@ -37,6 +37,9 @@ import {
   DEFAULT_MAX_BYTES,
   DEFAULT_TIMEOUT_MS,
   isPrivateAddress,
+  guardedRequestHeaders,
+  guardedResponseHeaders,
+  guardStepTimeout,
   MAX_REDIRECTS,
   type GuardedFetchOptions,
   type GuardedFetchResult,
@@ -88,6 +91,7 @@ async function dohLookup(
       const url = `${DOH_ENDPOINT}?name=${encodeURIComponent(host)}&type=${type}`;
       const res = await fetch(url, {
         headers: { accept: "application/dns-json" },
+        redirect: "error",
         signal: controller.signal,
       });
       if (!res.ok) return [] as ResolvedAddress[];
@@ -119,13 +123,17 @@ async function dohLookup(
   }
 }
 
+function cancelBody(response: Response): void {
+  try { void response.body?.cancel().catch(() => {}); } catch { /* best-effort */ }
+}
+
 export async function guardedFetch(
   url: string,
   options: GuardedFetchOptions = {},
 ): Promise<GuardedFetchResult> {
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  return fetchWithGuard(url, maxBytes, timeoutMs, 0);
+  return fetchWithGuard(url, maxBytes, timeoutMs, 0, options);
 }
 
 async function fetchWithGuard(
@@ -133,6 +141,7 @@ async function fetchWithGuard(
   maxBytes: number,
   timeoutMs: number,
   hop: number,
+  options: GuardedFetchOptions,
 ): Promise<GuardedFetchResult> {
   let parsed: URL;
   try {
@@ -146,7 +155,9 @@ async function fetchWithGuard(
     return { ok: false, reason: `insecure_scheme: ${scheme}` };
   }
 
-  const resolved = await dohLookup(parsed.hostname, timeoutMs);
+  const dnsTimeout = guardStepTimeout(timeoutMs, options.deadlineMs);
+  if (dnsTimeout <= 0) return { ok: false, reason: "deadline_exceeded" };
+  const resolved = await dohLookup(parsed.hostname, dnsTimeout);
   if (!resolved.ok) return resolved;
 
   // Reject if ANY returned address is private — public+private pair is the
@@ -157,13 +168,17 @@ async function fetchWithGuard(
     }
   }
 
+  const fetchTimeout = guardStepTimeout(timeoutMs, options.deadlineMs);
+  if (fetchTimeout <= 0) return { ok: false, reason: "deadline_exceeded" };
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(), fetchTimeout);
 
   let response: Response;
   try {
     response = await fetch(url, {
       redirect: "manual",
+      method: options.method === "OPTIONS" ? "OPTIONS" : "GET",
+      headers: guardedRequestHeaders(options),
       signal: controller.signal,
     });
   } catch (err) {
@@ -177,6 +192,10 @@ async function fetchWithGuard(
 
   if (response.status >= 300 && response.status < 400) {
     clearTimeout(timer);
+    cancelBody(response);
+    if (options.followRedirects === false) {
+      return { ok: true, status: response.status, headers: guardedResponseHeaders(response.headers), text: "" };
+    }
     const location = response.headers.get("location");
     if (!location) {
       return { ok: false, reason: `redirect ${response.status} without Location header` };
@@ -190,15 +209,19 @@ async function fetchWithGuard(
     } catch {
       return { ok: false, reason: "redirect Location is not a valid URL" };
     }
-    return fetchWithGuard(nextUrl, maxBytes, timeoutMs, hop + 1);
+    return fetchWithGuard(nextUrl, maxBytes, timeoutMs, hop + 1, options);
   }
 
-  if (!response.ok) {
+  if (!response.ok && !options.acceptStatus?.includes(response.status)) {
     clearTimeout(timer);
+    cancelBody(response);
     return { ok: false, reason: `fetch returned ${response.status}` };
   }
 
   try {
+    if (!response.body && (options.method === "OPTIONS" || options.acceptStatus?.includes(response.status))) {
+      return { ok: true, text: "", status: response.status, headers: guardedResponseHeaders(response.headers) };
+    }
     const body = response.body;
     if (!body) return { ok: false, reason: "empty_body" };
     const reader = body.getReader();
@@ -212,7 +235,7 @@ async function fetchWithGuard(
       total += value.byteLength;
       if (total > maxBytes) {
         controller.abort();
-        try { await reader.cancel(); } catch { /* best-effort */ }
+        try { void reader.cancel().catch(() => {}); } catch { /* best-effort */ }
         return { ok: false, reason: "response_too_large" };
       }
       chunks.push(value);
@@ -223,7 +246,7 @@ async function fetchWithGuard(
       merged.set(c, offset);
       offset += c.byteLength;
     }
-    return { ok: true, text: new TextDecoder().decode(merged) };
+    return { ok: true, text: new TextDecoder().decode(merged), status: response.status, headers: guardedResponseHeaders(response.headers) };
   } catch (err) {
     if (controller.signal.aborted) {
       return { ok: false, reason: `timeout after ${timeoutMs}ms` };

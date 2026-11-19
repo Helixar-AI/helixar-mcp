@@ -1,0 +1,110 @@
+{
+  "name": "playwright",
+  "tools": [
+    {
+      "name": "browser_navigate",
+      "description": "Navigate to a URL.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "browser_snapshot",
+      "description": "Capture an accessibility snapshot of the page.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "depth": {
+            "type": "number"
+          },
+          "boxes": {
+            "type": "boolean"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "browser_click",
+      "description": "Click an element on a page.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "element": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "doubleClick": {
+            "type": "boolean"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "browser_drag",
+      "description": "Drag and drop between two elements.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "startTarget": {
+            "type": "string"
+          },
+          "endTarget": {
+            "type": "string"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "browser_console_messages",
+      "description": "Return console messages.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "type": "string"
+          },
+          "all": {
+            "type": "boolean"
+          },
+          "filename": {
+            "type": "string"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
+    }
+  ],
+  "_source": "https://github.com/microsoft/playwright-mcp/blob/2337aff0213d28db41d3e3daf48cee19b3d0bd82/README.md",
+  "_license": "Apache-2.0",
+  "_reduced": true,
+  "_expected_findings": [],
+  "_notes": "Reduced, paraphrased tool descriptions and selected documented schema properties; not a captured tools/list response.",
+  "_license_source": "https://github.com/microsoft/playwright-mcp/blob/2337aff0213d28db41d3e3daf48cee19b3d0bd82/LICENSE"
+}

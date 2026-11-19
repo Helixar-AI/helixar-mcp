@@ -1,0 +1,75 @@
+{
+  "name": "cloudflare",
+  "tools": [
+    {
+      "name": "kv_namespaces_list",
+      "description": "List KV namespaces in the account.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "params": {
+            "type": "object"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "kv_namespace_create",
+      "description": "Create a KV namespace in the account.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "kv_namespace_delete",
+      "description": "Delete a KV namespace in the account.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "namespace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "kv_namespace_get",
+      "description": "Get details of a KV namespace.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "namespace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
+    }
+  ],
+  "_source": "https://github.com/cloudflare/mcp-server-cloudflare/blob/a21972e219289337731a066befb5c66886b9ce7b/apps/workers-bindings/src/tools/kv_namespace.tools.ts",
+  "_license": "Apache-2.0",
+  "_reduced": true,
+  "_expected_findings": [
+    "S-032"
+  ],
+  "_notes": "Reduced, paraphrased tool descriptions and selected documented schema properties; not a captured tools/list response. S-032 is expected: upstream marks KV creation destructiveHint false; creation changes state but need not be destructive, so the rule is conservative.",
+  "_license_source": "https://github.com/cloudflare/mcp-server-cloudflare/blob/a21972e219289337731a066befb5c66886b9ce7b/LICENSE"
+}

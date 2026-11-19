@@ -2,108 +2,21 @@
 //
 // Adapts the same MCP `Server` used by the stdio transport in src/server.ts
 // to the Streamable HTTP transport via the SDK's
-// WebStandardStreamableHTTPServerTransport. The Worker exposes only the two
-// tools whose implementations have no Node-only dependencies:
-//
-//   • helixar_inspect_mcp  — uses the Workers-runtime SSRF guard (DoH-based,
-//                            see src/lib/url-guard.workers.ts).
-//   • helixar_hdp_validate — pure schema validation, no I/O.
-//
-// helixar_releaseguard is intentionally NOT exposed here — it shells out to a
-// Go binary via child_process, which Workers does not support. That tool
-// remains stdio-only (Claude Desktop / local) until we either ship a sidecar
-// or migrate releaseguard to a Workers-compatible runtime.
+// WebStandardStreamableHTTPServerTransport. The registry selects tools for
+// the Worker surface and uses the Workers-specific guarded fetch implementation.
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   WebStandardStreamableHTTPServerTransport,
 } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { SERVER_VERSION, registerHandlers } from "./registry.js";
 
-import {
-  HdpValidateInputSchema,
-  hdpValidate,
-} from "./tools/hdp-validate.js";
-import {
-  InspectMcpInputSchema,
-  inspectMcp,
-} from "./tools/inspect-mcp.js";
-
-interface ToolDescriptor {
-  name: string;
-  description: string;
-  inputSchema: ReturnType<typeof zodToJsonSchema>;
-}
-
-const WORKER_TOOL_DESCRIPTORS: ToolDescriptor[] = [
-  {
-    name: "helixar_inspect_mcp",
-    description:
-      "Scan an MCP server (URL or raw manifest JSON) against Helixar's Sentinel detection rules. " +
-      "Returns risk score, findings, and a Claude-generated security brief. Quick mode is free + " +
-      "authless (top 8 rules); deep mode runs all 26 rules with an api_key.",
-    inputSchema: zodToJsonSchema(InspectMcpInputSchema),
-  },
-  {
-    name: "helixar_hdp_validate",
-    description:
-      "Validate an HDP delegation chain against IETF draft-helixar-hdp-agentic-delegation-00. " +
-      "Surfaces scope escalations, depth violations, expired hops, missing signatures. Every " +
-      "output cites the IETF draft and Zenodo DOI.",
-    inputSchema: zodToJsonSchema(HdpValidateInputSchema),
-  },
-];
-
-async function dispatchWorkerTool(
-  name: string,
-  args: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
-  switch (name) {
-    case "helixar_inspect_mcp":
-      return (await inspectMcp(args as Parameters<typeof inspectMcp>[0])) as unknown as Record<
-        string,
-        unknown
-      >;
-    case "helixar_hdp_validate":
-      return (await hdpValidate(args as Parameters<typeof hdpValidate>[0])) as unknown as Record<
-        string,
-        unknown
-      >;
-    default:
-      throw new Error(`unknown tool: ${name}`);
-  }
-}
-
-function buildWorkerServer(): Server {
+export function buildWorkerServer(): Server {
   const server = new Server(
-    { name: "helixar-security", version: "0.0.1" },
-    { capabilities: { tools: {} } },
+    { name: "helixar-security", version: SERVER_VERSION },
+    { capabilities: { tools: {}, resources: {}, prompts: {} } },
   );
-
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: WORKER_TOOL_DESCRIPTORS,
-  }));
-
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
-    try {
-      const result = await dispatchWorkerTool(name, (args ?? {}) as Record<string, unknown>);
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: "text", text: JSON.stringify({ error: "tool_failed", message }) }],
-        isError: true,
-      };
-    }
-  });
-
+  registerHandlers(server, "worker");
   return server;
 }
 

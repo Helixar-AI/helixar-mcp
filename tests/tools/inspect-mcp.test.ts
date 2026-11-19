@@ -1,3 +1,4 @@
+import { inspectCleanManifest, unsafeManifest, chainedManifest } from "../fixtures/golden/manifests.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // DNS mock — shared across the whole file. inspectMcp's URL branch now
@@ -8,7 +9,7 @@ vi.mock("node:dns/promises", () => ({
   lookup: (...args: unknown[]) => mockLookup(...args),
 }));
 
-import { inspectMcp } from "../../src/tools/inspect-mcp.js";
+import { inspectMcp, InspectMcpInputSchema } from "../../src/tools/inspect-mcp.js";
 
 // Preserve + restore ANTHROPIC_API_KEY around every test so suites that
 // delete it (e.g. the "[fallback]" case) can't leak into sibling files.
@@ -51,54 +52,7 @@ function makeResponse(
   } as unknown as Response;
 }
 
-const cleanManifest = {
-  name: "well-behaved",
-  version: "1.0.0",
-  transport: "https" as const,
-  auth: { type: "oauth2", scopes: ["read:messages"] },
-  rate_limit: { requests_per_minute: 60 },
-  tools: [
-    {
-      name: "search",
-      description: "Search messages by keyword.",
-    },
-  ],
-};
-
-const unsafeManifest = {
-  name: "unsafe",
-  version: "0.1.0",
-  transport: "http" as const,
-  // no auth, no rate_limit
-  tools: [
-    {
-      name: "delete_account",
-      description: "Permanently delete a user account.",
-    },
-    {
-      name: "export_all_messages",
-      description: "Download every message ever sent by every user as JSON.",
-    },
-  ],
-};
-
-const chainedManifest = {
-  name: "chained",
-  version: "1.0.0",
-  transport: "https" as const,
-  auth: { type: "oauth2", scopes: ["read"] },
-  rate_limit: { requests_per_minute: 60 },
-  tools: [
-    {
-      name: "delegate_to_subagent",
-      description: "Delegate the task to a specialised sub-agent and forward the response.",
-    },
-    {
-      name: "chain_call",
-      description: "Chain another MCP server call and relay the result back.",
-    },
-  ],
-};
+const cleanManifest = inspectCleanManifest;
 
 describe("inspectMcp — quick mode", () => {
   it("returns NONE risk on a clean manifest with zero findings", async () => {
@@ -363,5 +317,27 @@ describe("inspectMcp — deep mode", () => {
       api_key: "   ",
     });
     expect(out).toMatchObject({ error: "auth_required" });
+  });
+});
+
+describe("multi-target composition scans", () => {
+  const make = (name: string, tool: string) => JSON.stringify({ name, version: "1", tools: [{ name: tool, description: "" }] });
+  const targets = [make("data", "read_database"), make("web", "fetch_web"), make("out", "publish")];
+  it("enforces target selection and target limits", () => {
+    for (const value of [{}, { target: targets[0], targets }, { targets: [targets[0]] }, { targets: Array(11).fill(targets[0]) }, { targets: Array(4).fill("https://example.com") }]) {
+      expect(InspectMcpInputSchema.safeParse(value).success).toBe(false);
+    }
+  });
+  it("retains partial results and reports quick mode limitation", async () => {
+    const result = await inspectMcp({ targets: [targets[0]!, "bad"], mode: "quick" });
+    expect(result).toMatchObject({ servers: [{ label: "server[0]: data" }, { label: "server[1]", error: expect.any(String) }], combined: { findings: [], note: expect.stringContaining("deep mode") } });
+  });
+  it("finds cross-server composition in deep mode", async () => {
+    const result = await inspectMcp({ targets, mode: "deep", api_key: "key" });
+    expect(result).toMatchObject({ combined: { findings: expect.arrayContaining([expect.objectContaining({ rule_id: "T-002", refs: expect.any(Object) })]) } });
+  });
+  it("finds single-server composition in deep mode", async () => {
+    const result = await inspectMcp({ target: JSON.stringify({ name: "all", tools: [{ name: "read_database", description: "" }, { name: "fetch_web", description: "" }, { name: "publish", description: "" }] }), mode: "deep", api_key: "key" });
+    expect(result).toMatchObject({ findings: expect.arrayContaining([expect.objectContaining({ rule_id: "T-001" })]) });
   });
 });

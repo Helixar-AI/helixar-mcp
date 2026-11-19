@@ -199,3 +199,59 @@ describe("guardedFetch (workers) — happy path + caps", () => {
     if (!r.ok) expect(r.reason).toBe("fetch returned 500");
   });
 });
+
+describe("guardedFetch auth probe options (Workers)", () => {
+  it("sends only permitted OPTIONS headers and filters response headers", async () => {
+    const fetchMock = vi.fn(async (input: string | Request, _init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.url;
+      if (url.includes("dns-query")) return dohResponse(url.includes("type=28") ? 6 : 4, url.includes("type=28") ? [] : ["93.184.216.34"]);
+      return streamResponse(401, "denied", { "www-authenticate": "Bearer test", "content-type": "text/plain", "set-cookie": "secret=1" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const options = { method: "OPTIONS" as const, requestHeaders: { origin: "https://evil.example", accessControlRequestMethod: "POST" as const, authorization: "secret" }, acceptStatus: [401] };
+    expect(await guardedFetch("https://example.com/", options)).toEqual({ ok: true, status: 401, text: "denied", headers: { "www-authenticate": "Bearer test", "content-type": "text/plain" } });
+    const upstream = fetchMock.mock.calls.find(([url]) => url === "https://example.com/");
+    expect(upstream?.[1]).toMatchObject({ method: "OPTIONS", headers: { origin: "https://evil.example", "access-control-request-method": "POST" } });
+    expect(Object.keys(upstream?.[1]?.headers ?? {})).toHaveLength(2);
+  });
+
+  it("returns redirects without following them", async () => {
+    onFetch((url) => url.includes("type=1") ? dohResponse(4, ["93.184.216.34"]) : null);
+    onFetch((url) => url.includes("type=28") ? dohResponse(6, []) : null);
+    onFetch((url) => url === "https://example.com/" ? streamResponse(302, "ignored", { location: "https://other.example/", "access-control-allow-origin": "*" }) : null);
+    expect(await guardedFetch("https://example.com/", { followRedirects: false })).toEqual({ ok: true, status: 302, text: "", headers: { "access-control-allow-origin": "*", "content-type": "text/plain;charset=UTF-8" } });
+  });
+
+  it("keeps the deadline active while reading the response body", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.url;
+      if (url.includes("dns-query")) return dohResponse(url.includes("type=28") ? 6 : 4, url.includes("type=28") ? [] : ["93.184.216.34"]);
+      return new Response(new ReadableStream({ start(controller) {
+        init!.signal!.addEventListener("abort", () => controller.error(new Error("aborted")), { once: true });
+      } }));
+    }));
+    const result = await guardedFetch("https://example.com/", { timeoutMs: 1000, deadlineMs: Date.now() + 30 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("timeout");
+  });
+
+  it("cancels ignored redirect and rejected response bodies", async () => {
+    for (const status of [302, 403]) {
+      const cancel = vi.fn();
+      vi.stubGlobal("fetch", vi.fn(async (input: string | Request) => {
+        const url = typeof input === "string" ? input : input.url;
+        if (url.includes("dns-query")) return dohResponse(url.includes("type=28") ? 6 : 4, url.includes("type=28") ? [] : ["93.184.216.34"]);
+        return new Response(new ReadableStream({ cancel }), { status });
+      }));
+      await guardedFetch("https://example.com/", { followRedirects: false });
+      expect(cancel).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("does not begin DNS after the deadline", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await guardedFetch("https://example.com/", { deadlineMs: Date.now() - 1 })).toEqual({ ok: false, reason: "deadline_exceeded" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

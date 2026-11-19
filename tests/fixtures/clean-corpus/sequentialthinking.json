@@ -1,0 +1,38 @@
+{
+  "name": "sequentialthinking",
+  "tools": [
+    {
+      "name": "sequentialthinking",
+      "description": "Break down and revise a problem through sequential thoughts.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "thought": {
+            "type": "string"
+          },
+          "nextThoughtNeeded": {
+            "type": "boolean"
+          },
+          "thoughtNumber": {
+            "type": "integer"
+          },
+          "totalThoughts": {
+            "type": "integer"
+          },
+          "isRevision": {
+            "type": "boolean"
+          },
+          "branchId": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ],
+  "_source": "https://github.com/modelcontextprotocol/servers/blob/c799c8552b0f27b7a33a7b9233773da144dddcf5/src/sequentialthinking/README.md",
+  "_license": "CC-BY-4.0",
+  "_reduced": true,
+  "_expected_findings": [],
+  "_notes": "Reduced, paraphrased tool descriptions and selected documented schema properties; not a captured tools/list response. The documented server exposes one tool. Upstream documentation is CC-BY-4.0; its repository also describes an ongoing MIT-to-Apache-2.0 code license transition.",
+  "_license_source": "https://github.com/modelcontextprotocol/servers/blob/c799c8552b0f27b7a33a7b9233773da144dddcf5/LICENSE"
+}

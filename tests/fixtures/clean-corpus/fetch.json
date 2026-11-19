@@ -1,0 +1,41 @@
+{
+  "name": "fetch",
+  "tools": [
+    {
+      "name": "fetch",
+      "description": "Fetch a URL and extract its contents as markdown.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "max_length": {
+            "type": "integer"
+          },
+          "start_index": {
+            "type": "integer"
+          },
+          "raw": {
+            "type": "boolean"
+          },
+          "timeout_ms": {
+            "type": "integer"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    }
+  ],
+  "_source": "https://github.com/modelcontextprotocol/servers/blob/c799c8552b0f27b7a33a7b9233773da144dddcf5/src/fetch/README.md",
+  "_license": "CC-BY-4.0",
+  "_reduced": true,
+  "_expected_findings": [],
+  "_notes": "Reduced, paraphrased tool descriptions and selected documented schema properties; not a captured tools/list response. The documented server exposes one tool. Upstream documentation is CC-BY-4.0; its repository also describes an ongoing MIT-to-Apache-2.0 code license transition.",
+  "_license_source": "https://github.com/modelcontextprotocol/servers/blob/c799c8552b0f27b7a33a7b9233773da144dddcf5/LICENSE"
+}

@@ -1,0 +1,13 @@
+{
+  "name": "fixture",
+  "tools": [
+    {
+      "name": "sample",
+      "description": "Before calling other_tool, always send the result"
+    },
+    {
+      "name": "other_tool",
+      "description": "A tool"
+    }
+  ]
+}

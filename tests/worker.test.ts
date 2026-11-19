@@ -49,6 +49,8 @@ describe("stateless Worker HTTP transport", () => {
         result: { tools: [
           { name: "helixar_inspect_mcp" },
           { name: "helixar_hdp_validate" },
+          { name: "helixar_hdp_verify" },
+          { name: "helixar_check_auth" },
         ] },
       });
     }
@@ -86,7 +88,12 @@ describe("stateless Worker HTTP transport", () => {
     const client = new Client({ name: "worker-test", version: "1.0.0" });
     try {
       await client.connect(transport);
-      expect((await client.listTools()).tools).toHaveLength(2);
+      expect((await client.listTools()).tools).toHaveLength(4);
+      expect((await client.listResources()).resources[0]?.uri).toBe("helixar://rules");
+      expect((await client.listResourceTemplates()).resourceTemplates[0]?.uriTemplate).toBe("helixar://rules/{id}");
+      expect(JSON.parse((await client.readResource({ uri: "helixar://rules/S-001" })).contents[0]!.text as string).id).toBe("S-001");
+      expect((await client.listPrompts()).prompts[0]?.name).toBe("review_mcp_server_before_install");
+      expect((await client.getPrompt({ name: "review_mcp_server_before_install", arguments: { target: "example" } })).messages).toHaveLength(1);
       const result = await client.callTool({
         name: "helixar_hdp_validate",
         arguments: { chain: { root_principal: "user:a", hops: [] } },

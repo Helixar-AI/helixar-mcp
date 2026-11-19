@@ -1,0 +1,80 @@
+{
+  "name": "everything",
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echo a message.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "get-sum",
+      "description": "Calculate the sum of two numbers.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "number"
+          },
+          "b": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    {
+      "name": "get-resource-links",
+      "description": "Return links to resources.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "name": "get-resource-reference",
+      "description": "Return a resource content block.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "resourceType": {
+            "type": "string"
+          },
+          "resourceId": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "name": "trigger-long-running-operation",
+      "description": "Simulate a multi-step operation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "duration": {
+            "type": "number"
+          },
+          "steps": {
+            "type": "number"
+          }
+        }
+      }
+    }
+  ],
+  "_source": "https://github.com/modelcontextprotocol/servers/blob/c799c8552b0f27b7a33a7b9233773da144dddcf5/src/everything/docs/features.md",
+  "_license": "CC-BY-4.0",
+  "_reduced": true,
+  "_expected_findings": [],
+  "_notes": "Reduced, paraphrased tool descriptions and selected documented schema properties; not a captured tools/list response. Upstream documentation is CC-BY-4.0; its repository also describes an ongoing MIT-to-Apache-2.0 code license transition.",
+  "_license_source": "https://github.com/modelcontextprotocol/servers/blob/c799c8552b0f27b7a33a7b9233773da144dddcf5/LICENSE"
+}

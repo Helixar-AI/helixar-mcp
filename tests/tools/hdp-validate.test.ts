@@ -167,3 +167,11 @@ describe("hdpValidate — input validation", () => {
     expect(out).toMatchObject({ error: "invalid_chain" });
   });
 });
+
+it("adds a diagram on request even for a semantically invalid parsed chain", async () => {
+  const normal = await hdpValidate({ chain: escalationChain, strict: false });
+  const explicitFalse = await hdpValidate({ chain: escalationChain, strict: false, explain: false });
+  expect(explicitFalse).toEqual(normal);
+  const explained = await hdpValidate({ chain: escalationChain, strict: false, explain: true });
+  expect(explained).toMatchObject({ valid: false, diagram: expect.stringContaining("flowchart LR") });
+});

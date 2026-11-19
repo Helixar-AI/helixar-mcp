@@ -3,6 +3,7 @@
 // runs offline and deterministically.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Agent } from "undici";
 
 // The guard does `import * as dns from "node:dns/promises"` internally; we
 // mock the module so every lookup goes through `mockLookup`.
@@ -530,5 +531,70 @@ describe("_createPinnedDispatcher", () => {
     expect(results).toEqual([
       { err: null, address: "2606:2800::1", family: 6 },
     ]);
+  });
+});
+
+describe("guardedFetch auth probe options (Node)", () => {
+  beforeEach(() => mockLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends only permitted OPTIONS headers and filters response headers", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse(401, [enc("denied")], {
+      "www-authenticate": "Bearer resource_metadata=\"https://example.com/meta\"",
+      "content-type": "text/plain",
+      "set-cookie": "secret=1",
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const options = { method: "OPTIONS" as const, requestHeaders: { origin: "https://evil.example", accessControlRequestMethod: "POST" as const, authorization: "secret" }, acceptStatus: [401] };
+    const result = await guardedFetch("https://example.com/", options);
+    expect(result).toEqual({ ok: true, status: 401, text: "denied", headers: { "www-authenticate": "Bearer resource_metadata=\"https://example.com/meta\"", "content-type": "text/plain" } });
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: "OPTIONS", headers: { origin: "https://evil.example", "access-control-request-method": "POST" } });
+    expect(Object.keys(fetchMock.mock.calls[0]?.[1].headers)).toHaveLength(2);
+  });
+
+  it("returns a redirect without following it or reading its body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse(302, [enc("ignored")], { location: "https://other.example/", "access-control-allow-origin": "*" }));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await guardedFetch("https://example.com/", { followRedirects: false })).toEqual({ ok: true, status: 302, text: "", headers: { "access-control-allow-origin": "*" } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the deadline active while reading the response body", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => ({
+      status: 200, ok: true, headers: new Headers(),
+      body: { async *[Symbol.asyncIterator]() {
+        await new Promise<void>((_, reject) => init.signal!.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+        yield enc("late");
+      } },
+    })));
+    const result = await guardedFetch("https://example.com/", { timeoutMs: 1000, deadlineMs: Date.now() + 30 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("timeout");
+  });
+
+  it("cancels ignored redirect and rejected response bodies", async () => {
+    for (const status of [302, 403]) {
+      const cancel = vi.fn().mockResolvedValue(undefined);
+      const response = makeResponse(status, [], {});
+      Object.assign(response.body!, { cancel });
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+      await guardedFetch("https://example.com/", { followRedirects: false });
+      expect(cancel).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("destroys its pinned dispatcher after each request", async () => {
+    const destroy = vi.spyOn(Agent.prototype, "destroy");
+    try {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeResponse(200, [enc("ok")])));
+      expect((await guardedFetch("https://example.com/")).ok).toBe(true);
+      expect(destroy).toHaveBeenCalled();
+    } finally { destroy.mockRestore(); }
+  });
+
+  it("does not begin DNS after the deadline", async () => {
+    mockLookup.mockClear();
+    expect(await guardedFetch("https://example.com/", { deadlineMs: Date.now() - 1 })).toEqual({ ok: false, reason: "deadline_exceeded" });
+    expect(mockLookup).not.toHaveBeenCalled();
   });
 });

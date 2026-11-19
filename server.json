@@ -2,13 +2,13 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "ai.helixar/mcp",
   "title": "Helixar Security",
-  "description": "Security tools for AI agents: scan MCP servers, validate HDP delegation chains, audit releases.",
+  "description": "Security tools for AI agents: scan MCP servers, validate and verify HDP delegation, audit releases.",
   "websiteUrl": "https://helixar.ai/connect",
   "repository": {
     "url": "https://github.com/Helixar-AI/helixar-mcp",
     "source": "github"
   },
-  "version": "0.0.1",
+  "version": "0.8.0",
   "remotes": [
     {
       "type": "streamable-http",
@@ -18,8 +18,8 @@
   "_meta": {
     "io.modelcontextprotocol.registry/publisher-provided": {
       "tool": "manual",
-      "version": "0.0.1",
-      "notes": "Workers deployment exposes 2 of 3 tools (helixar_inspect_mcp, helixar_hdp_validate). The third tool (helixar_releaseguard) wraps a Go binary and is stdio-only — install the npm package locally for the full set."
+      "version": "0.8.0",
+      "notes": "Workers exposes 4 of 5 tools (helixar_inspect_mcp, helixar_hdp_validate, helixar_hdp_verify, helixar_check_auth). The helixar_releaseguard tool wraps a Go binary and is stdio-only."
     }
   }
 }

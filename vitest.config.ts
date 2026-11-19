@@ -16,6 +16,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "#url-guard": urlGuardNodeSource,
+      "#releaseguard": fileURLToPath(new URL("./src/lib/releaseguard-entry.ts", import.meta.url)),
     },
   },
   test: {
