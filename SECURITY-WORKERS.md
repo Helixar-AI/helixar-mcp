@@ -72,3 +72,18 @@ This is below the bar for a v1 launch but above zero. It must be closed
 before any tool that performs authenticated outbound calls (or that
 materially trusts the response body for state-changing decisions) is added
 to the Workers deployment.
+
+## Authentication probe
+
+`helixar_check_auth` makes at most eight guarded requests, for at most 24
+Worker subrequests including DNS. It uses HTTPS GET and one OPTIONS
+preflight, with redirects disabled, a 64 KiB response cap and a ten-second
+overall deadline. The request carries no OAuth credentials and the probe
+does not send POST. Origin validation is inferred from preflight.
+
+Protected-resource discovery stays on the target origin. The probe can
+fetch well-known metadata on the first advertised authorization-server
+origin. It applies the same DNS and address validation at each host. The
+Workers guard’s residual lack of connect-time IP pinning applies to both
+origins. The probe stops at metadata discovery and never calls the
+authorization, token, or client registration endpoints.

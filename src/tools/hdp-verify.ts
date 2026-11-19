@@ -6,6 +6,8 @@ import {
   HdpTokenExpiredError,
 } from "@helixar_ai/hdp";
 import { z } from "zod";
+import type { HdpToken } from "@helixar_ai/hdp";
+import { diagram, fromToken, narrative } from "../lib/hdp-explain.js";
 import { escapeEvidence } from "../lib/poisoning.js";
 import { HDP_DOI, HDP_DRAFT_REFERENCE } from "./hdp-validate.js";
 
@@ -14,12 +16,15 @@ const MAX_TOKEN_BYTES = 65_536;
 export const HdpVerifyInputSchema = z.object({
   token: z.union([z.string(), z.record(z.unknown())]),
   public_key: z.string(),
+  explain: z.boolean().optional(),
 });
 export type HdpVerifyInput = z.infer<typeof HdpVerifyInputSchema>;
 
 type VerifyError = { code: string; message: string };
 export interface HdpVerifyOutput {
   valid: boolean;
+  diagram?: string;
+  narrative?: string;
   failed_step?: number;
   error?: VerifyError;
   issuer?: string;
@@ -59,7 +64,7 @@ function decodeKey(key: string): Uint8Array | undefined {
 export async function hdpVerify(input: HdpVerifyInput): Promise<HdpVerifyOutput> {
   const parsed = HdpVerifyInputSchema.safeParse(input);
   if (!parsed.success) return failure("invalid_input", "Token and public key are required");
-  const { token, public_key } = parsed.data;
+  const { token, public_key, explain } = parsed.data;
   let serialized: string;
   try {
     serialized = typeof token === "string" ? token : JSON.stringify(token);
@@ -99,6 +104,16 @@ export async function hdpVerify(input: HdpVerifyInput): Promise<HdpVerifyOutput>
         out.issuer = escapeEvidence(principal.id);
       }
       if (Array.isArray(candidate.chain)) out.hop_count = candidate.chain.length;
+    }
+    if (explain && out.valid) {
+      try {
+        const graph = fromToken(object as HdpToken);
+        try { out.diagram = diagram(graph); } catch { out.diagram = 'flowchart LR\n  n0["Explanation unavailable"]'; }
+        try { out.narrative = await narrative(graph); } catch { out.narrative = "Explanation unavailable."; }
+      } catch {
+        out.diagram = 'flowchart LR\n  n0["Explanation unavailable"]';
+        out.narrative = "Explanation unavailable.";
+      }
     }
     return out;
   } catch (error) {

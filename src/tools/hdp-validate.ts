@@ -8,6 +8,7 @@
 // conversation that triggers this tool.
 
 import { z } from "zod";
+import { diagram, fromChain } from "../lib/hdp-explain.js";
 import { narrate } from "../lib/narrate.js";
 import { UNTRUSTED_INSTRUCTION, untrustedBlock } from "../lib/prompt-guard.js";
 import {
@@ -33,6 +34,7 @@ export const HdpValidateInputSchema = z.object({
   chain: DelegationChainSchema,
   /** Strict mode: any violation flips valid → false. Default: only HIGH/CRITICAL flip valid. */
   strict: z.boolean().default(false),
+  explain: z.boolean().optional(),
 });
 
 export type HdpValidateInput = z.infer<typeof HdpValidateInputSchema>;
@@ -54,6 +56,7 @@ export interface HdpValidateSuccess {
   hops: HopSummary[];
   violations: Violation[];
   narrative: string;
+  diagram?: string;
   draft_reference: typeof HDP_DRAFT_REFERENCE;
   doi: typeof HDP_DOI;
 }
@@ -134,7 +137,7 @@ export async function hdpValidate(input: HdpValidateInput): Promise<HdpValidateO
       doi: HDP_DOI,
     };
   }
-  const { chain, strict } = parsed.data;
+  const { chain, strict, explain } = parsed.data;
 
   const violations = validateChain(chain);
   const escalation = scopeEscalationDetected(violations);
@@ -156,6 +159,7 @@ export async function hdpValidate(input: HdpValidateInput): Promise<HdpValidateO
     hops,
     violations,
     narrative,
+    ...(explain ? { diagram: diagram(fromChain(chain)) } : {}),
     draft_reference: HDP_DRAFT_REFERENCE,
     doi: HDP_DOI,
   };

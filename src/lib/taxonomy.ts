@@ -39,6 +39,8 @@ map("S-031", refs(["LLM01"], ["ASI01"], ["AML.T0110"]));
 map("S-032", refs(["LLM06"], ["ASI02", "ASI09"]));
 map("T-001 T-002", refs(["LLM02", "LLM06"], ["ASI02"], ["AML.T0086"]));
 map("T-003", refs([], ["ASI02", "ASI04"]));
+map("A-001 A-002 A-003 A-004 A-005 A-006 A-007", refs([], ["ASI03"]));
+map("A-008", refs(["LLM02"], [], ["AML.T0055"]));
 /** Return a fresh mapping so callers cannot mutate the shared catalog. */
 export function refsFor(id: string): RuleRefs {
   const value = RULE_REFS[id];

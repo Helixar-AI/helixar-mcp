@@ -9,8 +9,9 @@ describe("registry", () => {
   });
   it("advertises titles and tool annotations", () => {
     const expected = [
-      ["Scan MCP server", true, true], ["Check HDP chain", true, false],
-      ["Verify HDP token", true, false], ["Audit release artifacts", false, false],
+      ["Scan MCP server", true, true], ["Check HDP chain", true, true],
+      ["Verify HDP token", true, true], ["Check MCP auth setup", true, true],
+      ["Audit release artifacts", false, false],
     ];
     expect(TOOLS.map(t => [t.title, t.annotations.readOnlyHint, t.annotations.openWorldHint])).toEqual(expected);
     for (const t of TOOLS) expect(t.annotations).toMatchObject({ destructiveHint: false, idempotentHint: t.annotations.readOnlyHint });

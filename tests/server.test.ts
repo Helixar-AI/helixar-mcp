@@ -10,9 +10,10 @@ async function dispatchTool(name: string, args: Record<string, unknown>) {
 }
 
 describe("MCP tool registry", () => {
-  it("registers the four shippable tools", () => {
+  it("registers the five shippable tools", () => {
     const names = TOOL_DESCRIPTORS.map((t) => t.name).sort();
     expect(names).toEqual([
+      "helixar_check_auth",
       "helixar_hdp_validate",
       "helixar_hdp_verify",
       "helixar_inspect_mcp",
@@ -106,13 +107,14 @@ describe("MCP Server handlers (in-process transport)", () => {
     });
   });
 
-  it("responds to tools/list with the four Helixar tool descriptors", async () => {
+  it("responds to tools/list with the five Helixar tool descriptors", async () => {
     await withConnectedClient(async (client) => {
       const res = await client.listTools();
       const names = res.tools.map((t) => t.name).sort();
       expect(names).toEqual([
+        "helixar_check_auth",
         "helixar_hdp_validate",
-      "helixar_hdp_verify",
+        "helixar_hdp_verify",
         "helixar_inspect_mcp",
         "helixar_releaseguard",
       ]);

@@ -17,11 +17,12 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import releaseguard from "#releaseguard";
 import { catalogEntry, catalogList } from "./lib/catalog.js";
 import { reviewPrompt } from "./prompts/review.js";
+import { checkAuth, CheckAuthInputSchema } from "./tools/check-auth.js";
 import { hdpValidate, HdpValidateInputSchema } from "./tools/hdp-validate.js";
 import { hdpVerify, HdpVerifyInputSchema } from "./tools/hdp-verify.js";
 import { inspectMcp, InspectMcpInputSchema } from "./tools/inspect-mcp.js";
 
-export const SERVER_VERSION = "0.7.0";
+export const SERVER_VERSION = "0.8.0";
 
 type Surface = "stdio" | "worker";
 type ToolArguments = Record<string, unknown>;
@@ -66,7 +67,7 @@ export const TOOLS: ToolEntry[] = [
       "Surfaces scope escalations, depth violations, expired hops, missing signatures. Every " +
       "output cites the IETF draft and Zenodo DOI.",
     inputSchema: HdpValidateInputSchema,
-    annotations: readOnly,
+    annotations: { ...readOnly, openWorldHint: true },
     surfaces: ["stdio", "worker"],
     handler: hdpValidate,
   },
@@ -76,11 +77,22 @@ export const TOOLS: ToolEntry[] = [
     description:
       "Verify a Human Delegation Provenance (HDP) token offline with the issuer's Ed25519 public key. " +
       "Reports whether the signatures and chain are intact, which integrity step failed, and the " +
-      "recording period. Cites the IETF draft and Zenodo DOI.",
+      "recording period. Optional explanations may use the configured narration service. Cites the IETF draft and Zenodo DOI.",
     inputSchema: HdpVerifyInputSchema,
-    annotations: readOnly,
+    annotations: { ...readOnly, openWorldHint: true },
     surfaces: ["stdio", "worker"],
     handler: hdpVerify,
+  },
+  {
+    name: "helixar_check_auth",
+    title: "Check MCP auth setup",
+    description:
+      "Check a public HTTPS MCP endpoint for OAuth metadata, PKCE, resource indicators, " +
+      "dynamic client registration, and CORS signals. Reports eight checks with evidence and references.",
+    inputSchema: CheckAuthInputSchema,
+    annotations: { ...readOnly, openWorldHint: true },
+    surfaces: ["stdio", "worker"],
+    handler: checkAuth,
   },
 ];
 

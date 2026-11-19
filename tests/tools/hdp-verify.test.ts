@@ -87,3 +87,30 @@ describe("hdpVerify", () => {
     expect(JSON.stringify(returned)).not.toContain("SCHEMA_INVALID");
   });
 });
+
+it("explains only verified tokens and leaves default output unchanged", async () => {
+  const { token, key } = await fixture();
+  const normal = await hdpVerify({ token, public_key: key });
+  const explicitFalse = await hdpVerify({ token, public_key: key, explain: false });
+  expect(explicitFalse).toEqual(normal);
+  const explained = await hdpVerify({ token, public_key: key, explain: true });
+  expect(explained).toMatchObject({ valid: true, diagram: expect.stringContaining("flowchart LR"), narrative: expect.stringContaining("delegated to") });
+  const other = await generateKeyPair();
+  const failed = await hdpVerify({ token, public_key: exportPublicKey(other.publicKey), explain: true });
+  expect(failed.valid).toBe(false);
+  expect(failed.diagram).toBeUndefined();
+  expect(failed.narrative).toBeUndefined();
+});
+
+it("preserves a valid verification when narration fails", async () => {
+  const explainer = await import("../../src/lib/hdp-explain.js");
+  const spy = vi.spyOn(explainer, "narrative").mockRejectedValueOnce(new Error("narration failed"));
+  try {
+    const { token, key } = await fixture();
+    const result = await hdpVerify({ token, public_key: key, explain: true });
+    expect(result).toMatchObject({ valid: true, diagram: expect.stringContaining("flowchart LR"), narrative: "Explanation unavailable." });
+    expect(result.error).toBeUndefined();
+  } finally {
+    spy.mockRestore();
+  }
+});

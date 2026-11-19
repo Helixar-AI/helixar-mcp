@@ -150,8 +150,36 @@ export const MAX_REDIRECTS = 3;
 export interface GuardedFetchOptions {
   maxBytes?: number;
   timeoutMs?: number;
+  method?: "GET" | "OPTIONS";
+  requestHeaders?: { origin?: string; accessControlRequestMethod?: "POST" };
+  followRedirects?: boolean;
+  acceptStatus?: number[];
+  /** Absolute Date.now() deadline shared across all DNS and fetch steps. */
+  deadlineMs?: number;
 }
 
 export type GuardedFetchResult =
-  | { ok: true; text: string }
+  | { ok: true; text: string; status: number; headers: Record<string, string> }
   | { ok: false; reason: string };
+
+/** Copy only explicitly permitted request headers, even for untyped callers. */
+export function guardedRequestHeaders(options: GuardedFetchOptions): Record<string, string> {
+  const result: Record<string, string> = {};
+  if (typeof options.requestHeaders?.origin === "string") result.origin = options.requestHeaders.origin;
+  if (options.requestHeaders?.accessControlRequestMethod === "POST") result["access-control-request-method"] = "POST";
+  return result;
+}
+
+/** Expose only headers needed for authentication and CORS checks. */
+export function guardedResponseHeaders(headers: { get(name: string): string | null }): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const name of ["www-authenticate", "access-control-allow-origin", "access-control-allow-credentials", "content-type"]) {
+    const value = headers.get(name);
+    if (value !== null) result[name] = value;
+  }
+  return result;
+}
+
+export function guardStepTimeout(timeoutMs: number, deadlineMs?: number): number {
+  return deadlineMs === undefined ? timeoutMs : Math.max(0, Math.min(timeoutMs, deadlineMs - Date.now()));
+}

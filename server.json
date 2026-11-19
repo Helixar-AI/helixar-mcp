@@ -8,7 +8,7 @@
     "url": "https://github.com/Helixar-AI/helixar-mcp",
     "source": "github"
   },
-  "version": "0.7.0",
+  "version": "0.8.0",
   "remotes": [
     {
       "type": "streamable-http",
@@ -18,8 +18,8 @@
   "_meta": {
     "io.modelcontextprotocol.registry/publisher-provided": {
       "tool": "manual",
-      "version": "0.7.0",
-      "notes": "Workers exposes 3 of 4 tools (helixar_inspect_mcp, helixar_hdp_validate, helixar_hdp_verify). The helixar_releaseguard tool wraps a Go binary and is stdio-only."
+      "version": "0.8.0",
+      "notes": "Workers exposes 4 of 5 tools (helixar_inspect_mcp, helixar_hdp_validate, helixar_hdp_verify, helixar_check_auth). The helixar_releaseguard tool wraps a Go binary and is stdio-only."
     }
   }
 }

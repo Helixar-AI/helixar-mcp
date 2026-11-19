@@ -35,6 +35,9 @@ import {
   DEFAULT_MAX_BYTES,
   DEFAULT_TIMEOUT_MS,
   isPrivateAddress,
+  guardedRequestHeaders,
+  guardedResponseHeaders,
+  guardStepTimeout,
   MAX_REDIRECTS,
   type GuardedFetchOptions,
   type GuardedFetchResult,
@@ -105,6 +108,10 @@ async function resolveAndValidate(
   };
 }
 
+function cancelBody(response: Response): void {
+  try { void response.body?.cancel().catch(() => {}); } catch { /* best-effort */ }
+}
+
 /**
  * Build an undici Agent whose `connect.lookup` hook ALWAYS returns the
  * pre-validated IP. This closes the DNS-TOCTOU / rebinding gap — undici
@@ -138,7 +145,7 @@ export async function guardedFetch(
 ): Promise<GuardedFetchResult> {
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  return fetchWithGuard(url, maxBytes, timeoutMs, 0);
+  return fetchWithGuard(url, maxBytes, timeoutMs, 0, options);
 }
 
 async function fetchWithGuard(
@@ -146,6 +153,7 @@ async function fetchWithGuard(
   maxBytes: number,
   timeoutMs: number,
   hop: number,
+  options: GuardedFetchOptions,
 ): Promise<GuardedFetchResult> {
   let parsed: URL;
   try {
@@ -160,90 +168,108 @@ async function fetchWithGuard(
     return { ok: false, reason: `insecure_scheme: ${scheme}` };
   }
 
-  const resolved = await resolveAndValidate(parsed.hostname, timeoutMs);
+  const dnsTimeout = guardStepTimeout(timeoutMs, options.deadlineMs);
+  if (dnsTimeout <= 0) return { ok: false, reason: "deadline_exceeded" };
+  const resolved = await resolveAndValidate(parsed.hostname, dnsTimeout);
   if (!resolved.ok) return resolved;
 
+  const fetchTimeout = guardStepTimeout(timeoutMs, options.deadlineMs);
+  if (fetchTimeout <= 0) return { ok: false, reason: "deadline_exceeded" };
   const dispatcher = _createPinnedDispatcher(resolved.safe);
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  let response: Response;
   try {
-    // `dispatcher` is a Node-fetch extension (from undici) not covered by the
-    // built-in lib.dom types, so we cast to add the field.
-    response = await fetch(url, {
-      redirect: "manual",
-      signal: controller.signal,
-      dispatcher,
-    } as RequestInit & { dispatcher: Dispatcher });
-  } catch (err) {
-    clearTimeout(timer);
-    if (controller.signal.aborted) {
-      return { ok: false, reason: `timeout after ${timeoutMs}ms` };
-    }
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: `fetch failed: ${msg}` };
-  }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), fetchTimeout);
 
-  // Handle redirects manually so we can re-run the full guard on Location.
-  if (response.status >= 300 && response.status < 400) {
-    clearTimeout(timer);
-    const location = response.headers.get("location");
-    if (!location) {
-      return { ok: false, reason: `redirect ${response.status} without Location header` };
-    }
-    if (hop >= MAX_REDIRECTS) {
-      return { ok: false, reason: `too many redirects (> ${MAX_REDIRECTS})` };
-    }
-    // Resolve relative Location against the current URL.
-    let nextUrl: string;
+    let response: Response;
     try {
-      nextUrl = new URL(location, url).toString();
-    } catch {
-      return { ok: false, reason: "redirect Location is not a valid URL" };
-    }
-    return fetchWithGuard(nextUrl, maxBytes, timeoutMs, hop + 1);
-  }
-
-  if (!response.ok) {
-    clearTimeout(timer);
-    return { ok: false, reason: `fetch returned ${response.status}` };
-  }
-
-  // Stream the body and enforce maxBytes. We prefer the async-iterator path
-  // (Node 20's undici exposes it on response.body) because it lets us abort
-  // as soon as the cap is breached rather than buffering the full payload.
-  try {
-    const body = response.body as AsyncIterable<Uint8Array> | null | undefined;
-    if (!body || typeof (body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] !== "function") {
-      // Node 20+ always provides a streamable body on fetch Responses. A
-      // missing body here indicates either a mocked response (tests should
-      // always supply one) or a very unusual transport anomaly — reject
-      // rather than fall back to an unsigned response.text() which would
-      // bypass the size cap and the abort signal (a 100 MB body would be
-      // fully buffered before we could check the cap post-hoc).
-      return { ok: false, reason: "empty_body" };
-    }
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    for await (const chunk of body) {
-      total += chunk.byteLength;
-      if (total > maxBytes) {
-        controller.abort();
-        return { ok: false, reason: "response_too_large" };
+      // `dispatcher` is a Node-fetch extension (from undici) not covered by the
+      // built-in lib.dom types, so we cast to add the field.
+      response = await fetch(url, {
+        redirect: "manual",
+        method: options.method === "OPTIONS" ? "OPTIONS" : "GET",
+        headers: guardedRequestHeaders(options),
+        signal: controller.signal,
+        dispatcher,
+      } as RequestInit & { dispatcher: Dispatcher });
+    } catch (err) {
+      clearTimeout(timer);
+      if (controller.signal.aborted) {
+        return { ok: false, reason: `timeout after ${timeoutMs}ms` };
       }
-      chunks.push(chunk);
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, reason: `fetch failed: ${msg}` };
     }
-    const buf = Buffer.concat(chunks.map((c) => Buffer.from(c)));
-    return { ok: true, text: buf.toString("utf8") };
-  } catch (err) {
-    if (controller.signal.aborted) {
-      return { ok: false, reason: `timeout after ${timeoutMs}ms` };
+
+    // Handle redirects manually so we can re-run the full guard on Location.
+    if (response.status >= 300 && response.status < 400) {
+      clearTimeout(timer);
+      cancelBody(response);
+      if (options.followRedirects === false) {
+        return { ok: true, status: response.status, headers: guardedResponseHeaders(response.headers), text: "" };
+      }
+      const location = response.headers.get("location");
+      if (!location) {
+        return { ok: false, reason: `redirect ${response.status} without Location header` };
+      }
+      if (hop >= MAX_REDIRECTS) {
+        return { ok: false, reason: `too many redirects (> ${MAX_REDIRECTS})` };
+      }
+      // Resolve relative Location against the current URL.
+      let nextUrl: string;
+      try {
+        nextUrl = new URL(location, url).toString();
+      } catch {
+        return { ok: false, reason: "redirect Location is not a valid URL" };
+      }
+      return fetchWithGuard(nextUrl, maxBytes, timeoutMs, hop + 1, options);
     }
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: `read failed: ${msg}` };
+
+    if (!response.ok && !options.acceptStatus?.includes(response.status)) {
+      clearTimeout(timer);
+      cancelBody(response);
+      return { ok: false, reason: `fetch returned ${response.status}` };
+    }
+
+    // Stream the body and enforce maxBytes. We prefer the async-iterator path
+    // (Node 20's undici exposes it on response.body) because it lets us abort
+    // as soon as the cap is breached rather than buffering the full payload.
+    try {
+      if (!response.body && (options.method === "OPTIONS" || options.acceptStatus?.includes(response.status))) {
+        return { ok: true, text: "", status: response.status, headers: guardedResponseHeaders(response.headers) };
+      }
+      const body = response.body as AsyncIterable<Uint8Array> | null | undefined;
+      if (!body || typeof (body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] !== "function") {
+        // Node 20+ always provides a streamable body on fetch Responses. A
+        // missing body here indicates either a mocked response (tests should
+        // always supply one) or a very unusual transport anomaly — reject
+        // rather than fall back to an unsigned response.text() which would
+        // bypass the size cap and the abort signal (a 100 MB body would be
+        // fully buffered before we could check the cap post-hoc).
+        return { ok: false, reason: "empty_body" };
+      }
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      for await (const chunk of body) {
+        total += chunk.byteLength;
+        if (total > maxBytes) {
+          controller.abort();
+          return { ok: false, reason: "response_too_large" };
+        }
+        chunks.push(chunk);
+      }
+      const buf = Buffer.concat(chunks.map((c) => Buffer.from(c)));
+      return { ok: true, text: buf.toString("utf8"), status: response.status, headers: guardedResponseHeaders(response.headers) };
+    } catch (err) {
+      if (controller.signal.aborted) {
+        return { ok: false, reason: `timeout after ${timeoutMs}ms` };
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, reason: `read failed: ${msg}` };
+    } finally {
+      clearTimeout(timer);
+    }
   } finally {
-    clearTimeout(timer);
+    // Destroy asynchronously: disposal must not extend the caller's deadline.
+    void dispatcher.destroy().catch(() => {});
   }
 }

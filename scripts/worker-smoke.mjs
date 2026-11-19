@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { generateKeyPair, exportPublicKey, issueToken } from "@helixar_ai/hdp";
+import { exportPublicKey, extendChain, generateKeyPair, issueToken } from "@helixar_ai/hdp";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
@@ -57,7 +57,7 @@ async function waitForHealth() {
 }
 
 const client = new Client({ name: "helixar-worker-smoke", version: "1.0.0" });
-const options = { timeout: 10_000 };
+const options = { timeout: 15_000 };
 
 async function callTool(name, args) {
   const result = await client.callTool({ name, arguments: args }, undefined, options);
@@ -72,8 +72,9 @@ try {
   const { tools } = await client.listTools({}, options);
   const expected = {
     helixar_inspect_mcp: ["Scan MCP server", true],
-    helixar_hdp_validate: ["Check HDP chain", false],
-    helixar_hdp_verify: ["Verify HDP token", false],
+    helixar_hdp_validate: ["Check HDP chain", true],
+    helixar_hdp_verify: ["Verify HDP token", true],
+    helixar_check_auth: ["Check MCP auth setup", true],
   };
   assert.deepEqual(tools.map(({ name }) => name).sort(), Object.keys(expected).sort());
   for (const { name, title, annotations } of tools) {
@@ -106,12 +107,14 @@ try {
         { delegator: "agent-one", delegatee: "agent-two", scope: ["read"], signature: "example" },
       ],
     },
+    explain: true,
   });
   assert.equal(chain.valid, true);
   assert.equal(chain.hops.length, 2);
+  assert.match(chain.diagram, /^flowchart LR/);
 
   const { privateKey, publicKey } = await generateKeyPair();
-  const token = await issueToken({
+  const issued = await issueToken({
     sessionId: "worker-smoke",
     principal: { id: "smoke-user", id_type: "opaque" },
     scope: {
@@ -121,9 +124,27 @@ try {
     signingKey: privateKey,
     keyId: "worker-smoke",
   });
-  const audit = await callTool("helixar_hdp_verify", { token, public_key: exportPublicKey(publicKey) });
+  const token = await extendChain(issued, {
+    agent_id: "smoke-agent",
+    agent_type: "orchestrator",
+    action_summary: "Checked test delegation",
+    parent_hop: 0,
+  }, privateKey);
+  const audit = await callTool("helixar_hdp_verify", {
+    token, public_key: exportPublicKey(publicKey), explain: true,
+  });
   assert.equal(audit.valid, true, JSON.stringify(audit));
   assert.equal(audit.issuer, "smoke-user");
+  assert.equal(audit.hop_count, 1);
+  assert.match(audit.diagram, /^flowchart LR/);
+  assert.match(audit.diagram, /smoke-agent/);
+  assert.equal(typeof audit.narrative, "string");
+
+  const authTarget = "https://mcp.helixar.ai/mcp";
+  const auth = await callTool("helixar_check_auth", { url: authTarget });
+  assert.equal(auth.target, authTarget);
+  assert.deepEqual(auth.checks.map(({ id }) => id),
+    Array.from({ length: 8 }, (_, index) => `A-00${index + 1}`));
 
   const { resources } = await client.listResources({}, options);
   assert.ok(resources.some(({ uri }) => uri === "helixar://rules"));
@@ -137,6 +158,8 @@ try {
   assert.ok(prompts.some((prompt) => prompt.name === name));
   const prompt = await client.getPrompt({ name, arguments: { target } }, options);
   assert.match(prompt.messages[0].content.text, /mode: "quick"/);
+  const authPrompt = await client.getPrompt({ name, arguments: { target: authTarget } }, options);
+  assert.match(authPrompt.messages[0].content.text, /helixar_check_auth/);
 
   console.log("Worker smoke passed: every Worker tool, rule resources, and review prompt");
 } finally {

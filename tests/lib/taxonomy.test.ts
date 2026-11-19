@@ -9,9 +9,8 @@ describe("taxonomy", () => {
       }
     }
   });
-  it("covers all S and T rules", () => {
-    for (const prefix of ["S", "T"]) {
-      const count = prefix === "S" ? 32 : 3;
+  it("covers all Sentinel rules, composition rules, and auth checks", () => {
+    for (const [prefix, count] of [["S", 32], ["T", 3], ["A", 8]] as const) {
       for (let i = 1; i <= count; i++) expect(Object.keys(refsFor(`${prefix}-${String(i).padStart(3, "0")}`)).length).toBeGreaterThan(0);
     }
   });
